@@ -41,11 +41,14 @@ int main() {
     socklen_t sender_addr_len, receiver_addr_len;
 
     // Create sender socket
+        printf("hee\n");
+
     sender_socket_fd = m_socket(AF_INET, SOCK_STREAM, 0);
     if (sender_socket_fd < 0) {
         perror("Error creating sender socket");
         exit(EXIT_FAILURE);
     }
+        printf("hee\n");
 
     // Create receiver socket
     receiver_socket_fd = m_socket(AF_INET, SOCK_STREAM, 0);

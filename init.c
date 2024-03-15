@@ -6,64 +6,47 @@
 #include <string.h>
 #include <errno.h>
 #include "msocket.h"
-#define MAX_SOCKETS 25
-#define RECEIVER_BUFFER_SIZE 5
 
-#define SENDER_BUFFER_SIZE 10
-#define TIMEOUT_SECONDS 5
-#define NUM_SOCKETS 25
-#define SHARED_MEMORY_NAME "mtp_shared_memory"
+#include <sys/ipc.h>
+#include <sys/shm.h>
 
 // Shared data structure for MTP sockets
 
-typedef struct {
-    int sequence_number;
-    char message[1024]; // Assuming message size is 1024 bytes
-} Message;
 
-typedef struct {
-    int sequence_number;
-    int rwnd_size;
-} Acknowledgement;
-
-
-typedef struct {
-    Message receiver_buffer[RECEIVER_BUFFER_SIZE];
-    int rwnd_end;
-    int rwnd_size;
-} ReceiverWindow;
-typedef struct {
-    Message sender_buffer[SENDER_BUFFER_SIZE];
-    int swnd_start;
-    int swnd_end;
-    int swnd_size;
-} SenderWindow;
-
-typedef struct {
-     int is_free;
-    pid_t process_id;
-    int recv_socket_id;
-    char other_end_IP[20];
-    int other_end_port;
-    int send_socket_id;
-    struct sockaddr_in dest_addr;
-    ReceiverWindow receiver_window;
-    SenderWindow sender_window;
-} MTPSocketInfo;
 // Function prototypes for threads R and S
 void *thread_R(void *arg);
 void *thread_S(void *arg);
 void *garbage_collector(void *arg);
+sem_t *semaphore; // Semaphore to synchronize access to shared memory
 
 MTPSocketInfo *shared_memory ;
 int main() {
-    shared_memory= (MTPSocketInfo *)malloc(NUM_SOCKETS * sizeof(MTPSocketInfo));
-    // Initialize shared memory for MTP socket information
-    if (shared_memory == NULL) {
-        perror("Error allocating shared memory for MTP sockets");
+
+     key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
+
+    // Create or access the shared memory segment
+    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo), IPC_CREAT | 0666);
+    if (shmid == -1) {
+        perror("shmget");
         exit(EXIT_FAILURE);
     }
 
+    // Attach the shared memory segment to the process address space
+  shared_memory = shmat(shmid, NULL, 0);
+    if (shared_memory == (MTPSocketInfo *)-1) {
+        perror("shmat");
+        exit(EXIT_FAILURE);
+    }
+    sem_unlink("sem");
+
+    // Initialize semaphore
+    semaphore = sem_open("sem", O_CREAT|O_EXCL, 0666, 1);
+    if (semaphore == SEM_FAILED) {
+        perror("sem_open");
+        exit(EXIT_FAILURE);
+    }
+
+ 
     // Initialize shared memory structures
     // Set all MTP socket entries as free
     for (int i = 0; i < NUM_SOCKETS; i++) {
@@ -100,7 +83,19 @@ int main() {
     }
 
     // Free shared memory
-    free(shared_memory);
+    // free(shared_memory);
+
+    // Detach the shared memory segment from the process address space
+    if (shmdt(shared_memory) == -1) {
+        perror("shmdt");
+        exit(EXIT_FAILURE);
+    }
+
+    // Optionally, delete the shared memory segment
+    if (shmctl(shmid, IPC_RMID, NULL) == -1) {
+        perror("shmctl");
+        exit(EXIT_FAILURE);
+    }
 
     return 0;
 }
@@ -109,10 +104,10 @@ int main() {
 
 
 // Function prototype
-void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window);
+void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window, MTPSocketInfo mtp_socket_info);
 
 void *thread_R(void *arg) {
-    MTPSocketInfo *shared_memory = (MTPSocketInfo *)arg;
+    // MTPSocketInfo *shared_memory = (MTPSocketInfo *)arg;
 
     fd_set readfds;
     int max_sd = 0;
@@ -120,9 +115,17 @@ void *thread_R(void *arg) {
     while (1) {
         FD_ZERO(&readfds);
         max_sd = 0;
-
+        int cnt=0;
+   
         // Add all UDP sockets to the set
         for (int i = 0; i < MAX_SOCKETS; i++) {
+            if(shared_memory[i].is_free==1)
+            {
+                continue;
+
+            }
+
+            cnt++;
             if (shared_memory[i].recv_socket_id > 0) {
                 FD_SET(shared_memory[i].recv_socket_id, &readfds);
                 if (shared_memory[i].recv_socket_id > max_sd) {
@@ -130,6 +133,8 @@ void *thread_R(void *arg) {
                 }
             }
         }
+        if(cnt==0)continue;
+        printf("Num Sockets: %d",cnt);
 
         // Use select to monitor for activity on UDP sockets
         int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
@@ -140,6 +145,7 @@ void *thread_R(void *arg) {
 
         // Check each socket for activity
         for (int i = 0; i < MAX_SOCKETS; i++) {
+            if(shared_memory[i].is_free)continue;
             if (FD_ISSET(shared_memory[i].recv_socket_id, &readfds)) {
                 Message received_message;
                 // Receive message from the socket
@@ -150,29 +156,72 @@ void *thread_R(void *arg) {
                 }
                 // if (bytes_received == sizeof(Message)) {
                     // Process the received message
-                    process_received_message(i,received_message, &(shared_memory[i].receiver_window));
+                    if(received_message.is_ack)
+                    process_received_acknowledgement(received_message,&shared_memory[i].sender_window);
+                    else
+                    process_received_message(i,received_message, &(shared_memory[i].receiver_window),shared_memory[i]);
                 // }
             }
         }
+
     }
+    
 
     pthread_exit(NULL);
 }
 
-void send_acknowledgement(int socket_fd, int sequence_number, int rwnd_size) {
-    Acknowledgement ack;
+void process_received_acknowledgement(Message ack, ReceiverWindow *receiver_window) {
+    // Update rwnd size
+       // Lock the semaphore before accessing/modifying shared memory
+    if (sem_wait(semaphore) == -1) {
+        perror("sem_wait");
+        exit(EXIT_FAILURE);
+    }
+    receiver_window->rwnd_size = ack.rwnd_size;
+
+    // Update last in-order sequence number
+    int last_in_order_seq = ack.sequence_number;
+
+    // Mark buffer as free for all previous sequence numbers
+    for (int i = receiver_window->rwnd_start; i <= last_in_order_seq; i++) {
+        int index = i % SENDER_BUFFER_SIZE;
+        receiver_window->receiver_buffer[index].sequence_number = 0; // Mark as free
+        receiver_window->receiver_buffer[index].timestamp = -1; // Mark as free
+        receiver_window->receiver_buffer[index].ack_received = 1; // Mark as free
+    }
+    receiver_window->rwnd_start = last_in_order_seq + 1; // Update start index of receive window
+   // Lock the semaphore before accessing/modifying shared memory
+    if (sem_post(semaphore) == -1) {
+        perror("sem_post");
+        exit(EXIT_FAILURE);
+    }
+}
+
+void send_acknowledgement(int socket_fd, int sequence_number, int rwnd_size,MTPSocketInfo mtp_socket_info) {
+    Message ack;
     ack.sequence_number = sequence_number;
     ack.rwnd_size = rwnd_size;
 
     // Convert ACK structure to byte array
-    char ack_buffer[sizeof(Acknowledgement)];
-    memcpy(ack_buffer, &ack, sizeof(Acknowledgement));
+    char ack_buffer[sizeof(Message)];
+    memcpy(ack_buffer, &ack, sizeof(Message));
 
     // Send ACK message
-    send(socket_fd, ack_buffer, sizeof(Acknowledgement), 0);
+
+    if(sendto(socket_fd, ack_buffer, sizeof(Message), 0,(struct sockaddr *)&(mtp_socket_info.dest_addr), sizeof(mtp_socket_info.dest_addr)) == -1)
+    {
+        perror("ack send failed");
+    }
+
+    // send(socket_fd, ack_buffer, sizeof(Message), 0);
 }
 // Process received message and update receiver window
-void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window) {
+void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window,MTPSocketInfo mtp_socket_info) {
+       // Lock the semaphore before accessing/modifying shared memory
+    if (sem_wait(semaphore) == -1) {
+        perror("sem_wait");
+        exit(EXIT_FAILURE);
+    }
     if (received_message.sequence_number == receiver_window->rwnd_end + 1) {
         // In-order message
         int index = receiver_window->rwnd_end % RECEIVER_BUFFER_SIZE;
@@ -182,8 +231,16 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
             receiver_window->rwnd_end++;
             receiver_window->rwnd_size++;
         } else {
+            int idx;
             // Duplicate message, still send ACK with last in-order sequence number
-            send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end - 1);
+            // for( idx=0;idx<RECEIVER_BUFFER_SIZE;idx++)
+            // {
+            //     if(receiver_window->receiver_buffer[idx].sequence_number==0)
+            //     {
+            //         break;
+            //     }
+            // }
+            send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
         }
     } else if (received_message.sequence_number > receiver_window->rwnd_end &&
                received_message.sequence_number <= receiver_window->rwnd_end + RECEIVER_BUFFER_SIZE) {
@@ -194,10 +251,18 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
             receiver_window->receiver_buffer[index] = received_message;
             receiver_window->rwnd_size++;
         }
+        int idx;
+            // Duplicate message, still send ACK with last in-order sequence number
+          
         // Send ACK with last in-order sequence number
-        send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end - 1);
+        send_acknowledgement(shared_memory[i].recv_socket_id,receiver_window->rwnd_end-1, receiver_window->rwnd_size,mtp_socket_info);
     } else {
         // Message out of window range, ignore
+    }
+       // Lock the semaphore before accessing/modifying shared memory
+    if (sem_post(semaphore) == -1) {
+        perror("sem_post");
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -206,34 +271,58 @@ void handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_
 int send_message(int socket_id, Message message, struct sockaddr_in dest_addr);
 
 void *thread_S(void *arg) {
-    MTPSocketInfo *mtp_socket_info = (MTPSocketInfo *)arg;
+    // MTPSocketInfo *mtp_socket_info = (MTPSocketInfo *)arg;
 
     while (1) {
         // Send messages from sender buffer within sender window
-        for (int i = mtp_socket_info->sender_window.swnd_start; i < mtp_socket_info->sender_window.swnd_end; i++) {
-            if (send_message(mtp_socket_info->send_socket_id, mtp_socket_info->sender_window.sender_buffer[i], mtp_socket_info->dest_addr) == -1) {
-                perror("Error sending message");
-                // Handle error, possibly terminate the program or take appropriate action
-            }
-        }
 
-        // Wait for ACK or timeout
-        sleep(TIMEOUT_SECONDS);
+       for (int i = 0; i < NUM_SOCKETS; i++) {
+            // Check if the MTPSocketInfo entry is initialized
+            if (!shared_memory[i].is_free) {
+                // Send any unacknowledged packets in the sender buffer within the window
+                for (int j = shared_memory[i].sender_window.swnd_start; j != (shared_memory[i].sender_window.swnd_start+SENDER_BUFFER_SIZE)%SENDER_BUFFER_SIZE; j++) {
+                    Message *message = &(shared_memory[i].sender_window.sender_buffer[j]);
+                  
+                    if (message->timestamp==-1 || (!message->ack_received && is_timeout(message,TIMEOUT_SECONDS))) {
+                        // Send message
+                        if (sendto(shared_memory[i].send_socket_id, message->message, strlen(message->message), 0,
+                                   (struct sockaddr *)&(shared_memory[i].dest_addr), sizeof(shared_memory[i].dest_addr)) == -1) {
+                            perror("Error sending message");
+
+                            // Handle error, possibly terminate the program or take appropriate action
+                  
+                      }
+                         // Lock the semaphore before accessing/modifying shared memory
+                        if (sem_wait(semaphore) == -1) {
+                            perror("sem_wait");
+                            exit(EXIT_FAILURE);
+                        }
+                        message->timestamp=time(NULL);
+                           // Lock the semaphore before accessing/modifying shared memory
+                    if (sem_post(semaphore) == -1) {
+                        perror("sem_post");
+                        exit(EXIT_FAILURE);
+                    }
+                    }
+                
+                }
+            }
+       }
 
         // Handle timeout if no ACK received
-        handle_timeout(mtp_socket_info->send_socket_id, &(mtp_socket_info->sender_window), mtp_socket_info->dest_addr);
+        // handle_timeout(mtp_socket_info->send_socket_id, &(mtp_socket_info->sender_window), mtp_socket_info->dest_addr);
     }
 
 
     // Close socket
-    close(sender_socket_fd);
+    // close(sender_socket_fd);
 
     pthread_exit(NULL);
 }
 
 void handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_in dest_addr) {
     // Retransmit messages in sender window
-    for (int i = sender_window->swnd_start; i < sender_window->swnd_end; i++) {
+    for (int i = sender_window->swnd_start; i != (sender_window->swnd_start+SENDER_BUFFER_SIZE)%SENDER_BUFFER_SIZE; i++) {
         if (send_message(socket_id, sender_window->sender_buffer[i], dest_addr) == -1) {
             perror("Error retransmitting message");
             // Handle error, possibly terminate the program or take appropriate action
@@ -253,6 +342,16 @@ int send_message(int socket_id, Message message, struct sockaddr_in dest_addr) {
 
 
 
+int is_timeout(Message *message, int timeout_seconds) {
+    // Get the current time
+    time_t current_time = time(NULL);
+
+    // Calculate the elapsed time since the message was sent
+    int elapsed_time = current_time - message->timestamp;
+
+    // Check if the elapsed time exceeds the timeout threshold
+    return (elapsed_time >= timeout_seconds);
+}
 // Garbage collector function
 void *garbage_collector(void *arg) {
     MTPSocketInfo *shared_memory = (MTPSocketInfo *)arg;
@@ -262,72 +361,4 @@ void *garbage_collector(void *arg) {
     pthread_exit(NULL);
 }
 
-int last_acknowledged_sequence_number = 0;
 
-// Function to send the next packet
-void send_next_packet(int socket_fd) {
-    // Find the earliest timed-out, unacknowledged packet
-    int next_packet_index = -1;
-    struct timeval current_time;
-    gettimeofday(&current_time, NULL);
-    long min_timeout = LONG_MAX;
-    for (int i = 0; i < SENDER_BUFFER_SIZE; i++) {
-        if (!sent_packets[i].is_acknowledged && timed_out(sent_packets[i].send_time)) {
-            long timeout = calculate_timeout(sent_packets[i].send_time, current_time);
-            if (timeout < min_timeout) {
-                min_timeout = timeout;
-                next_packet_index = i;
-            }
-        }
-    }
-
-    // If a timed-out packet is found, resend it
-    if (next_packet_index != -1) {
-        send_message(socket_fd, sent_packets[next_packet_index].message);
-        gettimeofday(&sent_packets[next_packet_index].send_time, NULL);
-    }
-}
-
-// Function to check if a packet has timed out
-int timed_out(struct timeval send_time) {
-    struct timeval current_time;
-    gettimeofday(&current_time, NULL);
-    long elapsed_time = calculate_timeout(send_time, current_time);
-    return elapsed_time > TIMEOUT_THRESHOLD;
-}
-
-// Function to calculate the timeout duration
-long calculate_timeout(struct timeval send_time, struct timeval current_time) {
-    long elapsed_time = (current_time.tv_sec - send_time.tv_sec) * 1000000L +
-                         (current_time.tv_usec - send_time.tv_usec);
-    return elapsed_time;
-}
-
-// Function to handle acknowledgment
-void handle_acknowledgment(int sequence_number) {
-    // Mark the packet with the given sequence number as acknowledged
-    for (int i = 0; i < SENDER_BUFFER_SIZE; i++) {
-        if (sent_packets[i].sequence_number == sequence_number) {
-            sent_packets[i].is_acknowledged = 1;
-            break;
-        }
-    }
-
-    // Update the last acknowledged sequence number
-    last_acknowledged_sequence_number = sequence_number;
-}
-
-// Main loop to send packets
-void send_packets(int socket_fd) {
-    while (1) {
-        // Send the next packet if it is ready
-        send_next_packet(socket_fd);
-        
-        // Check for incoming acknowledgments
-        Acknowledgement ack;
-        if (receive_acknowledgement(socket_fd, &ack) == 0) {
-            // Handle acknowledgment
-            handle_acknowledgment(ack.sequence_number);
-        }
-    }
-}
