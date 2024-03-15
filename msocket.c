@@ -21,6 +21,7 @@ typedef struct {
     char message_buffer[MAX_MESSAGE_SIZE];
     int message_length;
 } SocketEntry;
+sem_t *sem_c; // Semaphore to synchronize access to shared memory
 sem_t *semaphore; // Semaphore to synchronize access to shared memory
 
 SocketEntry socket_table[MAX_SOCKETS];
@@ -34,7 +35,7 @@ int initialize_shared_memory(MTPSocketInfo* shared_memory) {
             break;
         }
     }
-    printf("ckpt 4\n");
+    // printf(" 4\n");
 
     // Initialize the source and destination addresses at the free index
     if (free_index != -1) {
@@ -59,7 +60,7 @@ int m_socket(int domain, int type, int protocol) {
     }
     
     key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
-
+    printf("key %d\n",key);
 //     // Create or access the shared memory segment
     int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo), 0666);
 
@@ -70,23 +71,23 @@ int m_socket(int domain, int type, int protocol) {
 
 //     // Attach the shared memory segment to the process address space
     MTPSocketInfo *shared_memory = shmat(shmid, NULL, 0);
-     printf("ckpt 1\n");
+    //  printf("ckpt 1\n");
 
     if (shared_memory == (MTPSocketInfo *)-1) {
         perror("shmat");
         exit(EXIT_FAILURE);
     }
             // Initialize semaphore
-    semaphore = sem_open("sem", 0);
-    if (semaphore == SEM_FAILED) {
+    sem_c = sem_open("semc", 0);
+    if (sem_c == SEM_FAILED) {
         perror("sem_open");
         exit(EXIT_FAILURE);
     }
-     printf("ckpt 2\n");
+    //  printf("ckpt 2\n");
 
 
  // Lock the semaphore before accessing/modifying shared memory
-    if (sem_wait(semaphore) == -1) {
+    if (sem_wait(sem_c) == -1) {
         perror("sem_wait");
         exit(EXIT_FAILURE);
     }
@@ -100,33 +101,47 @@ int m_socket(int domain, int type, int protocol) {
         //throw error;
         return -1;
     }
-         printf("ckpt 3\n");
+        //  printf("ckpt 3\n");
 
     // Create the UDP socket
-    int sockfd = socket(domain, SOCK_DGRAM, protocol);
-    if (sockfd < 0) {
-        return -1;
-    }
-     printf("sem wait\n");
-
-    // Initialize the socket entry
-    shared_memory[index].send_socket_id = sockfd;
-    socket_table[index].bound = 0;
-       // Detach the shared memory segment from the process address space
-    // Unlock the semaphore after finishing accessing/modifying shared memory
-    if (sem_post(semaphore) == -1) {
+    shared_memory[index].bound=1;
+    int ret=0;
+    if (sem_post(sem_c) == -1) {
         perror("sem_post");
         exit(EXIT_FAILURE);
     }
+    while(shared_memory[index].bound>0);
+    // if (sem_wait(semaphore) == -1) {
+    //     perror("sem_wait");
+    //     exit(EXIT_FAILURE);
+    // }
+    printf("bound %d\n",shared_memory[index].bound);
+    if(shared_memory[index].bound==0)
+    {
+        ret=0;
+        shared_memory[index].bound=3;
+    }
+    else
+    {
+        shared_memory[index].bound=3;
+        ret=shared_memory[index].bound;
+        // shared_memory->source_addr 
+        // shared_memory->dest_addr ;
+
+    }
+
+       // Detach the shared memory segment from the process address space
+    // Unlock the semaphore after finishing accessing/modifying shared memory
+    
     if (shmdt(shared_memory) == -1) {
         perror("shmdt");
         exit(EXIT_FAILURE);
     }
-
-    return sockfd;
+    
+    return index;
 }
 
-int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct sockaddr_in dest_addr) {
+int m_bind(int index, struct sockaddr_in source_addr, socklen_t addrlen,struct sockaddr_in dest_addr) {
     // Find the socket entry
     int i;
     key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
@@ -151,29 +166,47 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
         errno = EBADF;  // Bad file descriptor
         return -1;
     }
-   semaphore = sem_open("sem", 0);
-    if (semaphore == SEM_FAILED) {
+   sem_c = sem_open("semc", 0);
+    if (sem_c == SEM_FAILED) {
         perror("sem_open");
         exit(EXIT_FAILURE);
     }
 
  
  // Lock the semaphore before accessing/modifying shared memory
-    if (sem_wait(semaphore) == -1) {
+    if (sem_wait(sem_c) == -1) {
         perror("sem_wait");
         exit(EXIT_FAILURE);
     }
     // Bind the UDP socket
-    int ret = bind(sockfd, (struct sockaddr *)&source_addr, addrlen);
-    if (ret == 0) {
-            shared_memory->source_addr = source_addr;
-        shared_memory->dest_addr = dest_addr;
-         shared_memory->bound = 1;
-    }
-        if (sem_post(semaphore) == -1) {
+
+    int ret;
+            shared_memory[index].source_addr = source_addr;
+        shared_memory[index].dest_addr = dest_addr;
+         shared_memory[index].bound = 2;
+         printf("binding\n");
+        if (sem_post(sem_c) == -1) {
         perror("sem_post");
         exit(EXIT_FAILURE);
     }
+    while(shared_memory[index].bound>0);
+    if(shared_memory[index].bound==0)
+    {
+        ret=0;
+    shared_memory[index].bound=3;
+
+
+    }
+    else
+    {
+        shared_memory[index].bound=3;
+        ret=shared_memory[index].bound;
+        // shared_memory->source_addr 
+        // shared_memory->dest_addr ;
+
+    }
+
+
    if (shmdt(shared_memory) == -1) {
         perror("shmdt");
         exit(EXIT_FAILURE);
@@ -181,15 +214,26 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
     return ret;
 }
 
-ssize_t m_sendto(int sockfd, const void *buf, size_t len, int flags,
+ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
                  const struct sockaddr *dest_addr, socklen_t addrlen) {
     // Find the socket entry
-    int i;
-    for (i = 0; i < MAX_SOCKETS; i++) {
-        if (socket_table[i].sockfd == sockfd) {
-            break;
-        }
+    int i=index;
+    key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
+
+    // Create or access the shared memory segment
+    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo),  0666);
+    if (shmid == -1) {
+        perror("shmget");
+        exit(EXIT_FAILURE);
     }
+
+    // Attach the shared memory segment to the process address space
+    MTPSocketInfo *shared_memory = shmat(shmid, NULL, 0);
+    if (shared_memory == (MTPSocketInfo *)-1) {
+        perror("shmat");
+        exit(EXIT_FAILURE);
+    }
+
 
     if (i == MAX_SOCKETS) {
         errno = EBADF;  // Bad file descriptor
@@ -197,70 +241,85 @@ ssize_t m_sendto(int sockfd, const void *buf, size_t len, int flags,
     }
 
     // Check if the socket is bound
-    if (!socket_table[i].bound) {
+    if (shared_memory[i].bound!=3) {
         errno = ENOTCONN;
         return -1;
     }
 
     // Check if destination IP/Port matches with bound IP/Port
-    if (memcmp(dest_addr, &socket_table[i].dest_addr, addrlen) != 0) {
+    if (memcmp(dest_addr, &shared_memory[i].dest_addr, addrlen) != 0) {
         errno = ENOTCONN;
         return -1;
     }
 
     // Check if there is space in the send buffer
-    if (socket_table[i].message_length + len > MAX_MESSAGE_SIZE) {
+    if (shared_memory[i].sender_window.swnd_start + len > SENDER_BUFFER_SIZE) {
         errno = ENOBUFS;
         return -1;
     }
 
     // Copy the message to the send buffer
-    memcpy(socket_table[i].message_buffer + socket_table[i].message_length, buf, len);
-    socket_table[i].message_length += len;
+    memcpy(shared_memory[i].sender_window.sender_buffer + shared_memory[i].sender_window.swnd_end, buf, len);
+    shared_memory[i].sender_window.swnd_end+=len;
 
+      if (shmdt(shared_memory) == -1) {
+        perror("shmdt");
+        exit(EXIT_FAILURE);
+    }
     return len;
 }
 
-ssize_t m_recvfrom(int sockfd, void *buf, size_t len, int flags,
+ssize_t m_recvfrom(int index, void *buf, size_t len, int flags,
                    struct sockaddr *src_addr, socklen_t *addrlen) {
     // Find the socket entry
-    int i;
-    for (i = 0; i < MAX_SOCKETS; i++) {
-        if (socket_table[i].sockfd == sockfd) {
-            break;
-        }
+    // Find the socket entry
+    int i=index;
+    key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
+
+    // Create or access the shared memory segment
+    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo),  0666);
+    if (shmid == -1) {
+        perror("shmget");
+        exit(EXIT_FAILURE);
     }
+
+    // Attach the shared memory segment to the process address space
+    MTPSocketInfo *shared_memory = shmat(shmid, NULL, 0);
+    if (shared_memory == (MTPSocketInfo *)-1) {
+        perror("shmat");
+        exit(EXIT_FAILURE);
+    }
+
 
     if (i == MAX_SOCKETS) {
         errno = EBADF;  // Bad file descriptor
         return -1;
     }
 
-    // Check if there is any message in the receive buffer
-    if (socket_table[i].message_length == 0) {
-        errno = ENOMSG;
+    // Check if the socket is bound
+    if (shared_memory[i].bound!=3) {
+        errno = ENOTCONN;
         return -1;
     }
 
+ 
+
     // Copy the message from the receive buffer
-    memcpy(buf, socket_table[i].message_buffer, len);
-    *addrlen = sizeof(socket_table[i].src_addr);
-    memcpy(src_addr, &socket_table[i].src_addr, *addrlen);
+    memcpy(buf, shared_memory[i].receiver_window.receiver_buffer, len);
+    *addrlen = sizeof(shared_memory[i].dest_addr);
+    memcpy(src_addr, &shared_memory[i].dest_addr, *addrlen);
 
     // Reset the receive buffer
-    socket_table[i].message_length = 0;
+    bzero(shared_memory[i].receiver_window.receiver_buffer,shared_memory[i].receiver_window.rwnd_size);
+    shared_memory[i].receiver_window.rwnd_size = 0;
 
     return len;
 }
 
-int m_close(int sockfd) {
+int m_close(int index) {
     // Find the socket entry
-    int i;
-    for (i = 0; i < MAX_SOCKETS; i++) {
-        if (socket_table[i].sockfd == sockfd) {
-            break;
-        }
-    }
+    int i=index;
+   
 
     if (i == MAX_SOCKETS) {
         errno = EBADF;  // Bad file descriptor
@@ -268,11 +327,12 @@ int m_close(int sockfd) {
     }
 
     // Close the UDP socket
-    int ret = close(sockfd);
-    if (ret == 0) {
-        memset(&socket_table[i], 0, sizeof(SocketEntry));
-        socket_table[i].sockfd = -1;
-    }
+    // int ret = close(sockfd);
+    int ret=0;
+    // if (ret == 0) {
+    //     memset(&socket_table[i], 0, sizeof(SocketEntry));
+    //     socket_table[i].sockfd = -1;
+    // }
 
     return ret;
 }

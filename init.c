@@ -18,12 +18,14 @@ void *thread_R(void *arg);
 void *thread_S(void *arg);
 void *garbage_collector(void *arg);
 sem_t *semaphore; // Semaphore to synchronize access to shared memory
+sem_t *sem_c; // Semaphore to synchronize access to shared memory
 
 MTPSocketInfo *shared_memory ;
 int main() {
 
+    printf("entry\n");
      key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
-
+    printf("key %d\n",key);
     // Create or access the shared memory segment
     int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo), IPC_CREAT | 0666);
     if (shmid == -1) {
@@ -32,15 +34,21 @@ int main() {
     }
 
     // Attach the shared memory segment to the process address space
-  shared_memory = shmat(shmid, NULL, 0);
+  shared_memory = (MTPSocketInfo*)shmat(shmid, NULL, 0);
     if (shared_memory == (MTPSocketInfo *)-1) {
         perror("shmat");
         exit(EXIT_FAILURE);
     }
     sem_unlink("sem");
+    sem_unlink("semc");
 
     // Initialize semaphore
     semaphore = sem_open("sem", O_CREAT|O_EXCL, 0666, 1);
+    if (semaphore == SEM_FAILED) {
+        perror("sem_open");
+        exit(EXIT_FAILURE);
+    }
+    sem_c = sem_open("semc", O_CREAT|O_EXCL, 0666, 1);
     if (semaphore == SEM_FAILED) {
         perror("sem_open");
         exit(EXIT_FAILURE);
@@ -68,6 +76,70 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+
+
+    while(1)
+    {
+
+        
+
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        if(shared_memory[i].is_free==1)continue;
+        if(shared_memory[i].bound==1)
+        {
+            if (sem_wait(sem_c) == -1) {
+            perror("sem_wait");
+            exit(EXIT_FAILURE);
+        }
+            int ssockfd = socket(AF_INET, SOCK_DGRAM, 0);
+            if (ssockfd < 0) {
+                return -1;
+            }
+            int rsockfd = socket(AF_INET, SOCK_DGRAM, 0);
+            if (rsockfd < 0) {
+                return -1;
+            }
+            printf("socket creation \n");
+
+            // Initialize the socket entry
+            shared_memory[i].send_socket_id = ssockfd;
+            shared_memory[i].recv_socket_id = rsockfd;
+            shared_memory[i].bound=0;
+            if (sem_post(sem_c) == -1) {
+                perror("sem_post");
+                exit(EXIT_FAILURE);
+            }
+        }   
+        else if(shared_memory[i].bound==2)
+        {
+            if (sem_wait(sem_c) == -1) {
+            perror("sem_wait");
+            exit(EXIT_FAILURE);
+        }
+                    
+            int ret = bind(shared_memory[i].recv_socket_id, (struct sockaddr *)&shared_memory[i].source_addr, sizeof(shared_memory[i].source_addr));
+            if (ret == 0) {
+                    
+                shared_memory[i].bound = 0;
+                printf("binding\n");
+            }
+            else{
+                perror("error in binding");
+                shared_memory[i].bound = -1;
+            }
+            if (sem_post(sem_c) == -1) {
+            perror("sem_post");
+            exit(EXIT_FAILURE);
+        } 
+            
+        }
+
+        }
+            
+    }
+    
+
+
     // Wait for threads to finish
     if (pthread_join(thread_R_id, NULL) != 0) {
         perror("Error joining thread R");
@@ -81,6 +153,7 @@ int main() {
         perror("Error joining garbage collector thread");
         exit(EXIT_FAILURE);
     }
+
 
     // Free shared memory
     // free(shared_memory);
@@ -118,51 +191,77 @@ void *thread_R(void *arg) {
         int cnt=0;
    
         // Add all UDP sockets to the set
-        for (int i = 0; i < MAX_SOCKETS; i++) {
-            if(shared_memory[i].is_free==1)
-            {
-                continue;
+            // for (int i = 0; i < MAX_SOCKETS; i++) {
+            //     printf("index %d i %d\n",i,shared_memory[i].is_free);
+            //     if(shared_memory[i].is_free==1)
+            //     {
+            //         continue;
 
-            }
+            //     }
 
-            cnt++;
-            if (shared_memory[i].recv_socket_id > 0) {
-                FD_SET(shared_memory[i].recv_socket_id, &readfds);
-                if (shared_memory[i].recv_socket_id > max_sd) {
-                    max_sd = shared_memory[i].recv_socket_id;
-                }
-            }
-        }
-        if(cnt==0)continue;
-        printf("Num Sockets: %d",cnt);
+            //     cnt++;
+            //     if (shared_memory[i].recv_socket_id > 0) {
+            //         FD_SET(shared_memory[i].recv_socket_id, &readfds);
+            //         if (shared_memory[i].recv_socket_id > max_sd) {
+            //             max_sd = shared_memory[i].recv_socket_id;
+            //         }
+            //     }
+            // }
+        // FD_SET()
+        // if(cnt==0)
+        // continue;
 
         // Use select to monitor for activity on UDP sockets
-        int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
-        if (activity < 0) {
-            perror("Error in select");
-            continue;
-        }
+        // int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
+        // if (activity < 0) {
+        //     perror("Error in select");
+        //     continue;
+        // }
 
-        // Check each socket for activity
+        // // Check each socket for activity
         for (int i = 0; i < MAX_SOCKETS; i++) {
             if(shared_memory[i].is_free)continue;
-            if (FD_ISSET(shared_memory[i].recv_socket_id, &readfds)) {
+            cnt++;
+            // printf("bound %d \n",shared_memory[i].bound);
+
+           
+           if(shared_memory[i].bound==3)
+            {
+            // if (FD_ISSET(shared_memory[i].recv_socket_id, &readfds)) {
                 Message received_message;
                 // Receive message from the socket
-                int bytes_received = recvfrom(shared_memory[i].recv_socket_id, &received_message, sizeof(Message), 0, NULL, NULL);
+                int bytes_received = recvfrom(shared_memory[i].recv_socket_id, &received_message, sizeof(Message), MSG_DONTWAIT, NULL, NULL);
                 if (bytes_received < 0) {
-                    perror("Error in recvfrom");
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    // No data available yet, handle accordingly
+                    // printf("No data available yet\n");
+                } else {
+                    // perror("Error receiving data");
                     continue;
                 }
-                // if (bytes_received == sizeof(Message)) {
-                    // Process the received message
+                }
+                else if(bytes_received>0)
+                {
+                    printf("received data\n");
                     if(received_message.is_ack)
                     process_received_acknowledgement(received_message,&shared_memory[i].sender_window);
                     else
                     process_received_message(i,received_message, &(shared_memory[i].receiver_window),shared_memory[i]);
+                }
+                else
+                {
+                    printf("No dat\n");
+                    // no data received
+                }
+                // if (bytes_received == sizeof(Message)) {
+                    // Process the received message
                 // }
+            // }
             }
+            // printf("bound %d \n",shared_memory[i].bound);
         }
+                // printf("Num Sockets: %d\n",cnt);
+
 
     }
     
@@ -173,6 +272,7 @@ void *thread_R(void *arg) {
 void process_received_acknowledgement(Message ack, ReceiverWindow *receiver_window) {
     // Update rwnd size
        // Lock the semaphore before accessing/modifying shared memory
+       printf("hello\n");
     if (sem_wait(semaphore) == -1) {
         perror("sem_wait");
         exit(EXIT_FAILURE);
