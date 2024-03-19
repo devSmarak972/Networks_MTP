@@ -236,7 +236,7 @@ void *thread_R(void *arg) {
                     // No data available yet, handle accordingly
                     // printf("No data available yet\n");
                 } else {
-                    // perror("Error receiving data");
+                    perror("Error receiving data");
                     continue;
                 }
                 }
@@ -380,18 +380,24 @@ void *thread_S(void *arg) {
             // Check if the MTPSocketInfo entry is initialized
             if (!shared_memory[i].is_free) {
                 // Send any unacknowledged packets in the sender buffer within the window
-                for (int j = shared_memory[i].sender_window.swnd_start; j != (shared_memory[i].sender_window.swnd_start+SENDER_BUFFER_SIZE)%SENDER_BUFFER_SIZE; j++) {
+                for (int j = shared_memory[i].sender_window.swnd_start; j != (shared_memory[i].sender_window.swnd_end+SENDER_BUFFER_SIZE)%SENDER_BUFFER_SIZE; j++) {
+
                     Message *message = &(shared_memory[i].sender_window.sender_buffer[j]);
-                  
+                    if(message==NULL)continue;
+
+                    printf("in not free\n %s %d %d\n",shared_memory[i].sender_window.sender_buffer[j].message,shared_memory[i].sender_window.swnd_start,i);
                     if (message->timestamp==-1 || (!message->ack_received && is_timeout(message,TIMEOUT_SECONDS))) {
                         // Send message
+                        printf("message in send \n %s\n",message->message);
                         if (sendto(shared_memory[i].send_socket_id, message->message, strlen(message->message), 0,
                                    (struct sockaddr *)&(shared_memory[i].dest_addr), sizeof(shared_memory[i].dest_addr)) == -1) {
                             perror("Error sending message");
-
+                        message->timestamp=time(NULL);
+                        message->ack_received=0;
                             // Handle error, possibly terminate the program or take appropriate action
                   
                       }
+                      memset(message->message,'\0',strlen(message->message));
                          // Lock the semaphore before accessing/modifying shared memory
                         if (sem_wait(semaphore) == -1) {
                             perror("sem_wait");

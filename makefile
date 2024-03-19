@@ -3,7 +3,8 @@ CFLAGS = -Wall -Wextra -pedantic -std=c99
 LIB = libmsocket.a
 
 all: $(LIB) init
-
+	gcc user_1.c -o runrecv msocket.o -pthread
+	gcc user_2.c -o runsend msocket.o -pthread
 $(LIB): msocket.o
 	ar rcs libmsocket.a msocket.o
 

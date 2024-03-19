@@ -245,24 +245,34 @@ ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
         errno = ENOTCONN;
         return -1;
     }
+    printf("socket bound \n");
 
     // Check if destination IP/Port matches with bound IP/Port
-    if (memcmp(dest_addr, &shared_memory[i].dest_addr, addrlen) != 0) {
-        errno = ENOTCONN;
-        return -1;
-    }
+    // if (memcmp(dest_addr, (struct sockaddr *)&shared_memory[i].dest_addr, addrlen) != 0) {
+    //     errno = ENOTCONN;
+    //     return -1;
+    // }
 
+    printf("error 1\n");
     // Check if there is space in the send buffer
-    if (shared_memory[i].sender_window.swnd_start + len > SENDER_BUFFER_SIZE) {
-        errno = ENOBUFS;
-        return -1;
-    }
+    // if (shared_memory[i].sender_window.swnd_start + len > SENDER_BUFFER_SIZE) {
+    //     errno = ENOBUFS;
+    //     return -1;
+    // }
 
+    printf("error \n");
     // Copy the message to the send buffer
-    memcpy(shared_memory[i].sender_window.sender_buffer + shared_memory[i].sender_window.swnd_end, buf, len);
-    shared_memory[i].sender_window.swnd_end+=len;
+    int s_end=shared_memory[i].sender_window.swnd_end;
+    memcpy(shared_memory[i].sender_window.sender_buffer[s_end].message , buf, len);
+    
+    shared_memory[i].sender_window.swnd_start=0;
+    shared_memory[i].sender_window.swnd_end+=1;
+    shared_memory[i].sender_window.sender_buffer[s_end].sequence_number=1;
+    shared_memory[i].sender_window.sender_buffer[s_end].timestamp=time(NULL);
+    printf("%s %d %d\n",shared_memory[i].sender_window.sender_buffer[s_end].message,shared_memory[i].sender_window.swnd_end,i);
 
       if (shmdt(shared_memory) == -1) {
+        
         perror("shmdt");
         exit(EXIT_FAILURE);
     }

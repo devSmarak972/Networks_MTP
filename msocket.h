@@ -14,7 +14,7 @@
 #define RECEIVER_BUFFER_SIZE 5
 
 #define SENDER_BUFFER_SIZE 10
-#define TIMEOUT_SECONDS 5
+#define TIMEOUT_SECONDS 500
 #define NUM_SOCKETS 25
 #define SHARED_MEMORY_NAME "mtp_shared_memory"
 #define SOCK_MTP 2
