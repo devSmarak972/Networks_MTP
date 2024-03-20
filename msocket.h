@@ -7,7 +7,7 @@
 #include <semaphore.h>
 #include <sys/select.h>
 #include <fcntl.h>
-
+#include <string.h>
 #include <unistd.h>
 
 #define MAX_SOCKETS 25
@@ -26,6 +26,7 @@ typedef struct {
     int rwnd_size;
     char message[1024]; // Assuming message size is 1024 bytes
 } Message;
+// Function to serializeMsg data
 
 typedef struct {
     int sequence_number;
@@ -38,12 +39,15 @@ typedef struct {
     int rwnd_start;
     int rwnd_end;
     int rwnd_size;
+    sem_t* sem_recv;
 } ReceiverWindow;
 typedef struct {
     Message sender_buffer[SENDER_BUFFER_SIZE];
     int swnd_start;
     int swnd_end;
     int swnd_size;
+    sem_t* sem_send;
+
 } SenderWindow;
 
 typedef struct {
@@ -66,5 +70,7 @@ ssize_t m_sendto(int sockfd, const void *buf, size_t len, int flags,
 ssize_t m_recvfrom(int sockfd, void *buf, size_t len, int flags,
                    struct sockaddr *src_addr, socklen_t *addrlen);
 int m_close(int sockfd);
+void serializeMsg(  Message *data, uint8_t *buffer);
 
+void deserializeMsg(const uint8_t *buffer, Message *data); 
 #endif /* MTP_SOCKET_H */

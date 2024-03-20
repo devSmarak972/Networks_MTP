@@ -23,6 +23,7 @@ typedef struct {
 } SocketEntry;
 sem_t *sem_c; // Semaphore to synchronize access to shared memory
 sem_t *semaphore; // Semaphore to synchronize access to shared memory
+sem_t *sem_recv; // Semaphore to synchronize access to shared memory
 
 SocketEntry socket_table[MAX_SOCKETS];
 // Function to initialize shared memory buffer when m_socket call is made
@@ -276,6 +277,18 @@ ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
     }
     return len;
 }
+void serializeMsg(  Message *data, uint8_t *buffer) {
+    // printf("serializing %s\n",data->message);
+    memcpy(buffer, &(data->sequence_number), sizeof(int));
+    memcpy(buffer + sizeof(int), data->message, strlen(data->message));
+}
+
+// Function to deserializeMsg data
+void deserializeMsg(const uint8_t *buffer, Message *data) {
+    memcpy(&(data->sequence_number), buffer, sizeof(int));
+    memcpy(data->message, buffer + sizeof(int), sizeof(data->message));
+    // printf("in desirsalize:%d\n",data->sequence_number);
+}
 
 ssize_t m_recvfrom(int index, void *buf, size_t len, int flags,
                    struct sockaddr *src_addr, socklen_t *addrlen) {
@@ -309,20 +322,23 @@ ssize_t m_recvfrom(int index, void *buf, size_t len, int flags,
         errno = ENOTCONN;
         return -1;
     }
+    char semaphore_name[20];
+    snprintf(semaphore_name, sizeof(semaphore_name), "/semrecv_%d", i); // Generate unique semaphore name
 
- 
+    sem_t* sem_recv=sem_open(semaphore_name, 0);
+
 
     // Copy the message from the receive buffer
-    while(1)
+    sem_wait(sem_recv);
+    printf("in\n");
     for (int j = shared_memory[i].receiver_window.rwnd_start; j!= (shared_memory[i].receiver_window.rwnd_end)%RECEIVER_BUFFER_SIZE; j++) {
-    
     if(shared_memory[i].receiver_window.receiver_buffer[j].message==NULL)continue;
     memcpy(buf, shared_memory[i].receiver_window.receiver_buffer[j].message, len);
     *addrlen = sizeof(shared_memory[i].dest_addr);
     memcpy(src_addr, &shared_memory[i].dest_addr, *addrlen);
-    printf("message %s\n",buf);
+    printf("message %s\n",(char*)buf);
     // Reset the receive buffer
-    // bzero(shared_memory[i].receiver_window.receiver_buffer,shared_memory[i].receiver_window.rwnd_size);
+    bzero(shared_memory[i].receiver_window.receiver_buffer,shared_memory[i].receiver_window.rwnd_size);
     // shared_memory[i].receiver_window.rwnd_size = 0;
     }
     return len;
