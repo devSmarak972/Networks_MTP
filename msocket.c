@@ -253,22 +253,20 @@ ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
     //     return -1;
     // }
 
-    printf("error 1\n");
     // Check if there is space in the send buffer
     // if (shared_memory[i].sender_window.swnd_start + len > SENDER_BUFFER_SIZE) {
     //     errno = ENOBUFS;
     //     return -1;
     // }
 
-    printf("error \n");
     // Copy the message to the send buffer
     int s_end=shared_memory[i].sender_window.swnd_end;
+    printf("%d\n",s_end);
     memcpy(shared_memory[i].sender_window.sender_buffer[s_end].message , buf, len);
     
     shared_memory[i].sender_window.swnd_start=0;
     shared_memory[i].sender_window.swnd_end+=1;
-    shared_memory[i].sender_window.sender_buffer[s_end].sequence_number=1;
-    shared_memory[i].sender_window.sender_buffer[s_end].timestamp=time(NULL);
+    shared_memory[i].sender_window.sender_buffer[s_end].timestamp=-1;
     printf("%s %d %d\n",shared_memory[i].sender_window.sender_buffer[s_end].message,shared_memory[i].sender_window.swnd_end,i);
 
       if (shmdt(shared_memory) == -1) {
@@ -315,14 +313,18 @@ ssize_t m_recvfrom(int index, void *buf, size_t len, int flags,
  
 
     // Copy the message from the receive buffer
-    memcpy(buf, shared_memory[i].receiver_window.receiver_buffer, len);
+    while(1)
+    for (int j = shared_memory[i].receiver_window.rwnd_start; j!= (shared_memory[i].receiver_window.rwnd_end)%RECEIVER_BUFFER_SIZE; j++) {
+    
+    if(shared_memory[i].receiver_window.receiver_buffer[j].message==NULL)continue;
+    memcpy(buf, shared_memory[i].receiver_window.receiver_buffer[j].message, len);
     *addrlen = sizeof(shared_memory[i].dest_addr);
     memcpy(src_addr, &shared_memory[i].dest_addr, *addrlen);
-
+    printf("message %s\n",buf);
     // Reset the receive buffer
-    bzero(shared_memory[i].receiver_window.receiver_buffer,shared_memory[i].receiver_window.rwnd_size);
-    shared_memory[i].receiver_window.rwnd_size = 0;
-
+    // bzero(shared_memory[i].receiver_window.receiver_buffer,shared_memory[i].receiver_window.rwnd_size);
+    // shared_memory[i].receiver_window.rwnd_size = 0;
+    }
     return len;
 }
 
