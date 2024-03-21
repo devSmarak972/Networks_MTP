@@ -14,7 +14,8 @@
 #define RECEIVER_BUFFER_SIZE 5
 
 #define SENDER_BUFFER_SIZE 10
-#define TIMEOUT_SECONDS 500
+#define TIMEOUT_SECONDS 5
+#define SLEEP_DURATION (TIMEOUT_SECONDS * 500000)
 #define NUM_SOCKETS 25
 #define SHARED_MEMORY_NAME "mtp_shared_memory"
 #define SOCK_MTP 2
@@ -26,7 +27,7 @@ typedef struct {
     int rwnd_size;
     char message[1024]; // Assuming message size is 1024 bytes
 } Message;
-// Function to serializeMsg data
+// Function to serialize Msg data
 
 typedef struct {
     int sequence_number;
@@ -40,6 +41,7 @@ typedef struct {
     int rwnd_end;
     int rwnd_size;
     sem_t* sem_recv;
+    int nospace; // Add this flag to track the nospace condition
 } ReceiverWindow;
 typedef struct {
     Message sender_buffer[SENDER_BUFFER_SIZE];
@@ -73,4 +75,5 @@ int m_close(int sockfd);
 void serializeMsg(  Message *data, uint8_t *buffer);
 
 void deserializeMsg(const uint8_t *buffer, Message *data); 
+int dropMessage(float p);
 #endif /* MTP_SOCKET_H */
