@@ -14,7 +14,8 @@
 #define RECEIVER_BUFFER_SIZE 5
 
 #define SENDER_BUFFER_SIZE 10
-#define TIMEOUT_SECONDS 500
+#define TIMEOUT_SECONDS 5
+#define SLEEP_DURATION (TIMEOUT_SECONDS * 500000)
 #define NUM_SOCKETS 25
 #define SHARED_MEMORY_NAME "mtp_shared_memory"
 #define SOCK_MTP 2
@@ -74,4 +75,5 @@ int m_close(int sockfd);
 void serializeMsg(  Message *data, uint8_t *buffer);
 
 void deserializeMsg(const uint8_t *buffer, Message *data); 
+int dropMessage(float p);
 #endif /* MTP_SOCKET_H */
