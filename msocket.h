@@ -26,7 +26,7 @@ typedef struct {
     int rwnd_size;
     char message[1024]; // Assuming message size is 1024 bytes
 } Message;
-// Function to serializeMsg data
+// Function to serialize Msg data
 
 typedef struct {
     int sequence_number;
@@ -40,6 +40,7 @@ typedef struct {
     int rwnd_end;
     int rwnd_size;
     sem_t* sem_recv;
+    int nospace; // Add this flag to track the nospace condition
 } ReceiverWindow;
 typedef struct {
     Message sender_buffer[SENDER_BUFFER_SIZE];
