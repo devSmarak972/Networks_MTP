@@ -276,20 +276,33 @@ ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
     }
     return len;
 }
-void serializeMsg(  Message *data, uint8_t *buffer) {
-    // printf("serializing %s\n",data->message);
-    memcpy(buffer, &(data->sequence_number), sizeof(int));
-    memcpy(buffer+sizeof(int), &(data->is_ack), sizeof(int));
-    memcpy(buffer + 2*sizeof(int), data->message, strlen(data->message));
+
+void serializeMsg(Message *data, uint8_t *buffer) {
+    int msg_length = strlen(data->message);
+    memcpy(buffer, &(data->sequence_number), sizeof(data->sequence_number));
+    memcpy(buffer + sizeof(data->sequence_number), &(data->is_ack), sizeof(data->is_ack));
+    memcpy(buffer + sizeof(data->sequence_number) + sizeof(data->is_ack), &msg_length, sizeof(msg_length));
+    memcpy(buffer + sizeof(data->sequence_number) + sizeof(data->is_ack) + sizeof(msg_length), data->message, msg_length);
 }
 
-// Function to deserializeMsg data
+// Function to deserialize data
 void deserializeMsg(const uint8_t *buffer, Message *data) {
+    // Copy the sequence number and is_ack flag from the buffer
     memcpy(&(data->sequence_number), buffer, sizeof(int));
     memcpy(&(data->is_ack), buffer+sizeof(int), sizeof(int));
-    memcpy(data->message, buffer + 2*sizeof(int), sizeof(data->message));
-    // printf("in desirsalize:%d\n",data->sequence_number);
+
+    // Assuming the rest of the buffer contains the message
+    // Note: To ensure safety and avoid overflow, the message size should be limited
+    int messageLength = strlen((char *)buffer + 2*sizeof(int));
+    if (messageLength > sizeof(data->message) - 1) {
+        messageLength = sizeof(data->message) - 1;
+    }
+    memcpy(data->message, buffer + 2*sizeof(int), messageLength);
+    // Properly null-terminate the message
+    data->message[messageLength] = '\0';
 }
+
+
 
 ssize_t m_recvfrom(int index, void *buf, size_t len, int flags,
                    struct sockaddr *src_addr, socklen_t *addrlen) {
@@ -385,4 +398,10 @@ int m_close(int index) {
     // }
 
     return ret;
+}
+
+
+int dropMessage(float p) {
+    float random_number = (float)rand() / (float)RAND_MAX;
+    return random_number < p;
 }
