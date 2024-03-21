@@ -42,11 +42,15 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     printf("Socket created and bound successfully. \n");
-char message[] = "Hello, world!";
+for(int i=0;i<6;i++)
+{
+char message[20];
+    snprintf(message,sizeof(message),"Hello:%d",i);
 ssize_t sent_bytes = m_sendto(sockfd, message, strlen(message), 0,
                               (const struct sockaddr *)&source_addr,
                               sizeof(source_addr));
                   
-printf("\non end: %d",(int)sent_bytes);
+printf("\nsent: bytes%d ",(int)sent_bytes);
+}
     return 0;
 }

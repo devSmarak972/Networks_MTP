@@ -261,11 +261,11 @@ ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
     // }
 
     // Copy the message to the send buffer
+    
     int s_end=shared_memory[i].sender_window.swnd_end;
     printf("%d\n",s_end);
     memcpy(shared_memory[i].sender_window.sender_buffer[s_end].message , buf, len);
     
-    shared_memory[i].sender_window.swnd_start=0;
     shared_memory[i].sender_window.swnd_end+=1;
     shared_memory[i].sender_window.sender_buffer[s_end].timestamp=-1;
     printf("%s %d %d\n",shared_memory[i].sender_window.sender_buffer[s_end].message,shared_memory[i].sender_window.swnd_end,i);
@@ -280,13 +280,15 @@ ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
 void serializeMsg(  Message *data, uint8_t *buffer) {
     // printf("serializing %s\n",data->message);
     memcpy(buffer, &(data->sequence_number), sizeof(int));
-    memcpy(buffer + sizeof(int), data->message, strlen(data->message));
+    memcpy(buffer+sizeof(int), &(data->is_ack), sizeof(int));
+    memcpy(buffer + 2*sizeof(int), data->message, strlen(data->message));
 }
 
 // Function to deserializeMsg data
 void deserializeMsg(const uint8_t *buffer, Message *data) {
     memcpy(&(data->sequence_number), buffer, sizeof(int));
-    memcpy(data->message, buffer + sizeof(int), sizeof(data->message));
+    memcpy(&(data->is_ack), buffer+sizeof(int), sizeof(int));
+    memcpy(data->message, buffer + 2*sizeof(int), sizeof(data->message));
     // printf("in desirsalize:%d\n",data->sequence_number);
 }
 
@@ -323,24 +325,45 @@ ssize_t m_recvfrom(int index, void *buf, size_t len, int flags,
         return -1;
     }
     char semaphore_name[20];
+    
     snprintf(semaphore_name, sizeof(semaphore_name), "/semrecv_%d", i); // Generate unique semaphore name
 
     sem_t* sem_recv=sem_open(semaphore_name, 0);
-
+    sem_t* sema=sem_open("sem", 1);
+    if (sem_wait(sema) == -1) {
+        perror("sem_wait");
+        exit(EXIT_FAILURE);
+    }
 
     // Copy the message from the receive buffer
     sem_wait(sem_recv);
-    printf("in\n");
-    for (int j = shared_memory[i].receiver_window.rwnd_start; j!= (shared_memory[i].receiver_window.rwnd_end)%RECEIVER_BUFFER_SIZE; j++) {
-    if(shared_memory[i].receiver_window.receiver_buffer[j].message==NULL)continue;
-    memcpy(buf, shared_memory[i].receiver_window.receiver_buffer[j].message, len);
+    printf("start :%d end:%d size: %d\n",shared_memory[i].receiver_window.rwnd_start,shared_memory[i].receiver_window.rwnd_end,shared_memory[i].receiver_window.rwnd_size);
+    for (int j = shared_memory[i].receiver_window.rwnd_start; j< (shared_memory[i].receiver_window.rwnd_end); j=(j+1)) {
+        // if(shared_memory[i].receiver_window.receiver_buffer[j].sequence_number==0)
+        // {
+        //     break;
+        // }
+    int idx=j%RECEIVER_BUFFER_SIZE;
+    if(shared_memory[i].receiver_window.receiver_buffer[idx].message==NULL)break;
+    if(strlen(shared_memory[i].receiver_window.receiver_buffer[idx].message)==0)break;
+    // memcpy(buf, shared_memory[i].receiver_window.receiver_buffer[idx].message, len);
+    strcat(buf, shared_memory[i].receiver_window.receiver_buffer[idx].message);
+        // printf("message in recv: %s\n",buf);
     *addrlen = sizeof(shared_memory[i].dest_addr);
     memcpy(src_addr, &shared_memory[i].dest_addr, *addrlen);
-    printf("message %s\n",(char*)buf);
     // Reset the receive buffer
-    bzero(shared_memory[i].receiver_window.receiver_buffer,shared_memory[i].receiver_window.rwnd_size);
+    bzero(shared_memory[i].receiver_window.receiver_buffer[idx].message,strlen(shared_memory[i].receiver_window.receiver_buffer->message));
+    shared_memory[i].receiver_window.receiver_buffer[idx].is_ack=0;
+    shared_memory[i].receiver_window.receiver_buffer[idx].sequence_number=0;
+    shared_memory[i].receiver_window.rwnd_size++;
+    shared_memory[i].receiver_window.rwnd_start++;
     // shared_memory[i].receiver_window.rwnd_size = 0;
     }
+        if (sem_post(sema) == -1) {
+        perror("sem_post");
+        exit(EXIT_FAILURE);
+    }
+
     return len;
 }
 

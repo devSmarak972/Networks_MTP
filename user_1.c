@@ -41,15 +41,23 @@ int main(int argc, char* argv[]) {
         close(sockfd);
         return 1;
     }
-char buffer[1024];
+char buffer[1024*10];
 
 int recv_bytes;
     printf("Socket created and bound successfully. \n");
 int client_addr_len;
+sleep(10);
 recv_bytes = m_recvfrom(sockfd, buffer, sizeof(buffer), 0,
                         (struct sockaddr *)&dest_addr, &client_addr_len);
   
-                        
+      printf("message %s\n",buffer);
+bzero(buffer,sizeof(buffer));
+sleep(2);
+recv_bytes = m_recvfrom(sockfd, buffer, sizeof(buffer), 0,
+                        (struct sockaddr *)&dest_addr, &client_addr_len);
+  
+      printf("message2 %s\n",buffer);
+                   
     // Continue with further operations using the socket...
 
     return 0;
