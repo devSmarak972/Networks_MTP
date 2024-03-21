@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 #include "msocket.h"
 
 #include <sys/ipc.h>
@@ -282,6 +283,7 @@ int main() {
 void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window, MTPSocketInfo mtp_socket_info);
 
 void *thread_R(void *arg) {
+    float p = 0.05; // Probability of dropping a message
     fd_set readfds;
     struct timeval timeout;
     int max_sd = 0;
@@ -342,6 +344,10 @@ void *thread_R(void *arg) {
                     } else {
                         printf("bytes recv: %d\n",bytes_received);
                         deserializeMsg(buffer, &received_message);
+
+                        if(dropMessage(p)){
+                            continue;
+                        }
                         if(received_message.is_ack)
                             process_received_acknowledgement(received_message,&shared_memory[i].sender_window);
                         else {
@@ -469,63 +475,41 @@ void handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_
 int send_message(int socket_id, Message message, struct sockaddr_in dest_addr);
 
 void *thread_S(void *arg) {
-    // MTPSocketInfo *mtp_socket_info = (MTPSocketInfo *)arg;
-
     while (1) {
-        // Send messages from sender buffer within sender window
+        usleep(SLEEP_DURATION); // Sleep for a period shorter than T/2
 
-       for (int i = 0; i < NUM_SOCKETS; i++) {
-            // Check if the MTPSocketInfo entry is initialized
-            if (!shared_memory[i].is_free) {
-                // Send any unacknowledged packets in the sender buffer within the window
-                for (int idx = shared_memory[i].sender_window.swnd_start; idx != (shared_memory[i].sender_window.swnd_end); idx++) {
-                    
-                    int j=idx%SENDER_BUFFER_SIZE;
+        for (int i = 0; i < NUM_SOCKETS; i++) {
+            if (!shared_memory[i].is_free && shared_memory[i].bound == 3) { // Ensure the socket is active
+                // Handle message retransmission and sending new messages
+                for (int j = shared_memory[i].sender_window.swnd_start; j < shared_memory[i].sender_window.swnd_end; j++) {
+                    int idx = j % SENDER_BUFFER_SIZE;
+                    Message *msg = &shared_memory[i].sender_window.sender_buffer[idx];
 
-                    Message *message = &(shared_memory[i].sender_window.sender_buffer[j]);
-                    if(strlen(message->message)==0)
-                    {
+                    if (sem_wait(semaphore) == -1) {
+                        perror("sem_wait");
                         continue;
-                        printf("skipped :%d",j);
                     }
-                        if (sem_wait(semaphore) == -1) {
-                            perror("sem_wait");
-                            exit(EXIT_FAILURE);
-                        }
-                    message->sequence_number=j%SENDER_BUFFER_SIZE;
-                    if (message->timestamp==-1 || (!message->ack_received && is_timeout(message,TIMEOUT_SECONDS))) {
-                        // Send message
-                        printf("message in send \n %s\n",message->message);
-                            uint8_t serialized_data[sizeof(Message)];
-                        serializeMsg(message, serialized_data);
-                        if (sendto(shared_memory[i].send_socket_id, serialized_data, sizeof(serialized_data), 0,
-                                   (struct sockaddr *)&(shared_memory[i].dest_addr), sizeof(shared_memory[i].dest_addr)) == -1) {
-                            perror("Error sending message");
 
-                            // Handle error, possibly terminate the program or take appropriate action
-                  
-                      }
-                        message->timestamp=time(NULL);
-                        message->ack_received=0;
-                         // Lock the semaphore before accessing/modifying shared memory
-                           // Lock the semaphore before accessing/modifying shared memory
+                    if (!msg->ack_received && is_timeout(msg, TIMEOUT_SECONDS)) {
+                        // Retransmit message due to timeout
+                        printf("Retransmitting message: %s\n", msg->message);
+                        send_message(shared_memory[i].send_socket_id, *msg, shared_memory[i].dest_addr);
+                        msg->timestamp = time(NULL); // Update timestamp upon retransmission
+                    } else if (msg->timestamp == -1 && shared_memory[i].sender_window.swnd_size > 0) {
+                        // There's space in the window, send new message
+                        printf("Sending new message: %s\n", msg->message);
+                        send_message(shared_memory[i].send_socket_id, *msg, shared_memory[i].dest_addr);
+                        msg->timestamp = time(NULL); // Update timestamp for new message
                     }
+
                     if (sem_post(semaphore) == -1) {
                         perror("sem_post");
-                        exit(EXIT_FAILURE);
+                        continue;
                     }
-                
                 }
             }
-       }
-
-        // Handle timeout if no ACK received
-        // handle_timeout(mtp_socket_info->send_socket_id, &(mtp_socket_info->sender_window), mtp_socket_info->dest_addr);
+        }
     }
-
-
-    // Close socket
-    // close(sender_socket_fd);
 
     pthread_exit(NULL);
 }
@@ -540,27 +524,22 @@ void handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_
     }
 }
 
-int send_message(int socket_id, Message message, struct sockaddr_in dest_addr) {
-    // Send message
-    int bytes_sent = sendto(socket_id, &message, sizeof(Message), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-    if (bytes_sent == -1) {
-        perror("sendto");
-        return -1; // Return -1 on error
-    }
-    return 0; // Return 0 on success
+int is_timeout(Message *msg, int timeout_seconds) {
+    time_t current_time = time(NULL);
+    double elapsed = difftime(current_time, msg->timestamp);
+    return elapsed >= timeout_seconds;
 }
 
-
-
-int is_timeout(Message *message, int timeout_seconds) {
-    // Get the current time
-    time_t current_time = time(NULL);
-
-    // Calculate the elapsed time since the message was sent
-    int elapsed_time = current_time - message->timestamp;
-
-    // Check if the elapsed time exceeds the timeout threshold
-    return (elapsed_time >= timeout_seconds);
+int send_message(int socket_id, Message msg, struct sockaddr_in dest_addr) {
+    uint8_t buffer[sizeof(Message)];
+    serializeMsg(&msg, buffer);
+    ssize_t sent_bytes = sendto(socket_id, buffer, sizeof(buffer), 0,
+                                (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (sent_bytes == -1) {
+        perror("sendto");
+        return -1;
+    }
+    return 0;
 }
 // Garbage collector function
 void *garbage_collector(void *arg) {
