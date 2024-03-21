@@ -142,13 +142,11 @@ int m_socket(int domain, int type, int protocol) {
     return index;
 }
 
-int m_bind(int index, struct sockaddr_in source_addr, socklen_t addrlen,struct sockaddr_in dest_addr) {
-    // Find the socket entry
-    int i;
-    key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
+int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen, struct sockaddr_in dest_addr) {
+    key_t key = ftok("makefile", 'S');  // Generate a key for the shared memory segment
 
     // Create or access the shared memory segment
-    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo),  0666);
+    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo), 0666);
     if (shmid == -1) {
         perror("shmget");
         exit(EXIT_FAILURE);
@@ -156,64 +154,65 @@ int m_bind(int index, struct sockaddr_in source_addr, socklen_t addrlen,struct s
 
     // Attach the shared memory segment to the process address space
     MTPSocketInfo *shared_memory = shmat(shmid, NULL, 0);
-    if (shared_memory == (MTPSocketInfo *)-1) {
+    if (shared_memory == (void *)-1) {
         perror("shmat");
         exit(EXIT_FAILURE);
     }
 
-  
-
-    if (i == MAX_SOCKETS) {
-        errno = EBADF;  // Bad file descriptor
-        return -1;
+    // Open semaphores
+    sem_t *sem1 = sem_open("Sem1", 0);  // Semaphore for bind request
+    if (sem1 == SEM_FAILED) {
+        perror("sem_open Sem1");
+        exit(EXIT_FAILURE);
     }
-   sem_c = sem_open("semc", 0);
-    if (sem_c == SEM_FAILED) {
-        perror("sem_open");
+    sem_t *sem2 = sem_open("Sem2", 0);  // Semaphore for bind completion
+    if (sem2 == SEM_FAILED) {
+        perror("sem_open Sem2");
         exit(EXIT_FAILURE);
     }
 
- 
- // Lock the semaphore before accessing/modifying shared memory
+    // Lock the semaphore before accessing/modifying shared memory
     if (sem_wait(sem_c) == -1) {
-        perror("sem_wait");
+        perror("sem_wait sem_c");
         exit(EXIT_FAILURE);
     }
-    // Bind the UDP socket
 
-    int ret;
-            shared_memory[index].source_addr = source_addr;
-        shared_memory[index].dest_addr = dest_addr;
-         shared_memory[index].bound = 2;
-         printf("binding\n");
-        if (sem_post(sem_c) == -1) {
-        perror("sem_post");
+    // Update shared memory with bind information
+    shared_memory[sockfd].source_addr = source_addr;
+    shared_memory[sockfd].dest_addr = dest_addr;
+    shared_memory[sockfd].bound = 2;  // Indicate bind request
+
+    if (sem_post(sem_c) == -1) {  // Release lock on shared memory
+        perror("sem_post sem_c");
         exit(EXIT_FAILURE);
     }
-    while(shared_memory[index].bound>0);
-    if(shared_memory[index].bound==0)
-    {
-        ret=0;
-    shared_memory[index].bound=3;
 
-
-    }
-    else
-    {
-        shared_memory[index].bound=3;
-        ret=shared_memory[index].bound;
-        // shared_memory->source_addr 
-        // shared_memory->dest_addr ;
-
+    if (sem_post(sem1) == -1) {  // Signal init process to handle bind
+        perror("sem_post sem1");
+        exit(EXIT_FAILURE);
     }
 
+    if (sem_wait(sem2) == -1) {  // Wait for bind to complete
+        perror("sem_wait sem2");
+        exit(EXIT_FAILURE);
+    }
 
-   if (shmdt(shared_memory) == -1) {
+    int ret = 0;
+    // Check result of bind operation
+    if (shared_memory[sockfd].bound != 0) {  // Check if bind was successful
+        ret = -1;  // Bind failed
+        errno = shared_memory[sockfd].bound;  // Set errno to the error reported by init process
+    }
+
+    // Detach the shared memory segment from the process address space
+    if (shmdt(shared_memory) == -1) {
         perror("shmdt");
         exit(EXIT_FAILURE);
     }
+
     return ret;
 }
+
 
 ssize_t m_sendto(int index, const void *buf, size_t len, int flags,
                  const struct sockaddr *dest_addr, socklen_t addrlen) {
