@@ -64,6 +64,8 @@ int main() {
         shared_memory[i].receiver_window.rwnd_size = RECEIVER_BUFFER_SIZE;
         shared_memory[i].receiver_window.rwnd_start = 0;
         shared_memory[i].receiver_window.rwnd_end = 0;
+        for(int j=0;j<RECEIVER_BUFFER_SIZE;j++)
+        shared_memory[i].receiver_window.receiver_buffer[j].sequence_number == -1;
         char semaphore_name[20];
         snprintf(semaphore_name, sizeof(semaphore_name), "/semrecv_%d", i); // Generate unique semaphore name
         sem_unlink(semaphore_name); // Remove named semaphore
@@ -357,12 +359,14 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
         perror("sem_wait");
         exit(EXIT_FAILURE);
     }
+    int left=RECEIVER_BUFFER_SIZE-(receiver_window->rwnd_end-receiver_window->rwnd_start)%RECEIVER_BUFFER_SIZE;
+            
     printf("recevd message: seq number:%d rwnd end:%d\n",received_message.sequence_number,receiver_window->rwnd_end);
     if (received_message.sequence_number == receiver_window->rwnd_end ) {
         // In-order message
         int index = receiver_window->rwnd_end % RECEIVER_BUFFER_SIZE;
         
-        if (receiver_window->receiver_buffer[index].sequence_number == 0) {
+        if (receiver_window->receiver_buffer[index].sequence_number == -1) {
             // Message not yet received, store in receiver buffer
             memcpy(receiver_window->receiver_buffer[index].message,received_message.message,strlen(received_message.message));
             printf("here %d %s\n",index,receiver_window->receiver_buffer[index].message);
@@ -375,7 +379,6 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
             // Assuming sem_init has been called to initialize the semaphore before usage
 
             // Get the value of the semaphore
-           
             send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
         } else {
             int idx;
@@ -387,24 +390,45 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
             //         break;
             //     }
             // }
-            send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
+            int l=lastInOrder(receiver_window);
+            receiver_window->rwnd_end=l;
+            send_acknowledgement(shared_memory[i].recv_socket_id, l-1,receiver_window->rwnd_size,mtp_socket_info);
         }
-    } else if (received_message.sequence_number > receiver_window->rwnd_end &&
-               received_message.sequence_number <= receiver_window->rwnd_end + RECEIVER_BUFFER_SIZE) {
+    } else if (received_message.sequence_number >= receiver_window->rwnd_start &&
+               received_message.sequence_number < receiver_window->rwnd_end ) {
         // Out-of-order message
         int index = received_message.sequence_number % RECEIVER_BUFFER_SIZE;
-        if (receiver_window->receiver_buffer[index].sequence_number == 0) {
+        if (receiver_window->receiver_buffer[index].sequence_number == -1) {
             // Store if within window and not a duplicate
-            receiver_window->receiver_buffer[index] = received_message;
+            memcpy(receiver_window->receiver_buffer[index].message,received_message.message,strlen(received_message.message));
+            printf("here mid %d %s\n",index,receiver_window->receiver_buffer[index].message);
             receiver_window->rwnd_size--;
+            receiver_window->receiver_buffer[index].sequence_number=received_message.sequence_number;
+            int l=lastInOrder(receiver_window);
+            receiver_window->rwnd_end=l;
+            send_acknowledgement(shared_memory[i].recv_socket_id,l-1, receiver_window->rwnd_size,mtp_socket_info);
         }
-        int idx;
-            // Duplicate message, still send ACK with last in-order sequence number
-          
-        // Send ACK with last in-order sequence number
-        send_acknowledgement(shared_memory[i].recv_socket_id,receiver_window->rwnd_end-1, receiver_window->rwnd_size,mtp_socket_info);
-    } else {
+        
+    } else if(received_message.sequence_number<receiver_window->rwnd_end+left) {
+        
+        // in window range but ahead of rwnd_end
+        int index = received_message.sequence_number % RECEIVER_BUFFER_SIZE;
+        if (receiver_window->receiver_buffer[index].sequence_number == -1) {
+            // Store if within window and not a duplicate
+            memcpy(receiver_window->receiver_buffer[index].message,received_message.message,strlen(received_message.message));
+            printf("here mid %d %s\n",index,receiver_window->receiver_buffer[index].message);
+            receiver_window->rwnd_size--;
+            receiver_window->receiver_buffer[index].sequence_number=received_message.sequence_number;
+            int l=lastInOrder(receiver_window);
+            receiver_window->rwnd_end=l;
+
+            send_acknowledgement(shared_memory[i].recv_socket_id,l-1, receiver_window->rwnd_size,mtp_socket_info);
+        }
+
+    }
+    else{
         // Message out of window range, ignore
+
     }
        // Lock the semaphore before accessing/modifying shared memory
     if (sem_post(semaphore) == -1) {
@@ -416,7 +440,16 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
 
 void handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_in dest_addr);
 int send_message(int socket_id, Message message, struct sockaddr_in dest_addr);
-
+int lastInOrder(ReceiverWindow* receiver_window)
+{
+    for(int k=receiver_window->rwnd_start;k<receiver_window->rwnd_end;k++)
+            {
+                int index = k % RECEIVER_BUFFER_SIZE;
+                if (receiver_window->receiver_buffer[index].sequence_number == -1) {
+                    return k;
+                }
+            }
+}
 void *thread_S(void *arg) {
     // MTPSocketInfo *mtp_socket_info = (MTPSocketInfo *)arg;
 
@@ -441,6 +474,7 @@ void *thread_S(void *arg) {
                             perror("sem_wait");
                             exit(EXIT_FAILURE);
                         }
+                        printf("%d",message->timestamp);
                     message->sequence_number=j%SENDER_BUFFER_SIZE;
                     if (message->timestamp==-1 || (!message->ack_received && is_timeout(message,TIMEOUT_SECONDS))) {
                         // Send message
