@@ -19,19 +19,23 @@ void *thread_S(void *arg);
 void *garbage_collector(void *arg);
 sem_t *semaphore; // Semaphore to synchronize access to shared memory
 sem_t *sem_c; // Semaphore to synchronize access to shared memory
-
+int selfpipe[2];
+sem_t* sem_recv;
+int transmission=0;
 MTPSocketInfo *shared_memory ;
 int main() {
 
-    printf("entry\n");
+    // printf("entry\n");
      key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
-    printf("key %d\n",key);
+    // printf("key %d\n",key);
     // Create or access the shared memory segment
+    pipe(selfpipe);
     int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo), IPC_CREAT | 0666);
     if (shmid == -1) {
         perror("shmget");
         exit(EXIT_FAILURE);
     }
+    transmission=0;
 
     // Attach the shared memory segment to the process address space
   shared_memory = (MTPSocketInfo*)shmat(shmid, NULL, 0);
@@ -42,6 +46,7 @@ int main() {
     bzero(shared_memory,NUM_SOCKETS * sizeof(MTPSocketInfo));
     sem_unlink("sem");
     sem_unlink("semc");
+    // sem_unlink("sem_recv");
 
     // Initialize semaphore
     semaphore = sem_open("sem", O_CREAT|O_EXCL, 0666, 1);
@@ -55,25 +60,34 @@ int main() {
         exit(EXIT_FAILURE);
     }
     
+    //   sem_recv=sem_open("/semrecv", O_CREAT, 0666, 0);
 
  
     // Initialize shared memory structures
     // Set all MTP socket entries as free
     for (int i = 0; i < NUM_SOCKETS; i++) {
         shared_memory[i].is_free = 1;
+        shared_memory[i].bound = -1;
         shared_memory[i].receiver_window.rwnd_size = RECEIVER_BUFFER_SIZE;
         shared_memory[i].receiver_window.rwnd_start = 0;
         shared_memory[i].receiver_window.rwnd_end = 0;
-        char semaphore_name[20];
-        snprintf(semaphore_name, sizeof(semaphore_name), "/semrecv_%d", i); // Generate unique semaphore name
-        sem_unlink(semaphore_name); // Remove named semaphore
-        shared_memory[i].receiver_window.sem_recv=sem_open(semaphore_name, O_CREAT, 0666, 0);
-        if(shared_memory[i].receiver_window.sem_recv==SEM_FAILED)
+        for(int j=0;j<RECEIVER_BUFFER_SIZE;j++)
+        shared_memory[i].receiver_window.receiver_buffer[j].sequence_number = -1;
+        for(int j=0;j<SENDER_BUFFER_SIZE;j++)
         {
-        perror("sem failed");
-        exit(EXIT_FAILURE);
+        shared_memory[i].sender_window.sender_buffer[j].timestamp = -1;
+        shared_memory[i].sender_window.sender_buffer[j].ack_received = -1;
         }
+        shared_memory[i].sender_window.swnd_start=0;
+        shared_memory[i].sender_window.swnd_end=RECEIVER_BUFFER_SIZE;
+        shared_memory[i].sender_window.swnd_size=RECEIVER_BUFFER_SIZE;
+        shared_memory[i].sender_window.nospace=0;
+        shared_memory[i].receiver_window.nospace=0;
+        shared_memory[i].sender_window.flag=0;
+        shared_memory[i].sender_window.swnd_written=0;
+
     }
+        //  printf("ened init:%d\n",shared_memory[0].sender_window.swnd_end);
 
     // Create threads R, S, and garbage collector G
     pthread_t thread_R_id, thread_S_id, garbage_collector_id;
@@ -119,6 +133,7 @@ int main() {
             shared_memory[i].send_socket_id = ssockfd;
             shared_memory[i].recv_socket_id = rsockfd;
             shared_memory[i].bound=0;
+            
             if (sem_post(sem_c) == -1) {
                 perror("sem_post");
                 exit(EXIT_FAILURE);
@@ -135,12 +150,17 @@ int main() {
             if (ret == 0) {
                     
                 shared_memory[i].bound = 0;
-                printf("binding\n");
+                  char signal = 'X'; // Or any data you want to write
+                write(selfpipe[1], &signal, sizeof(signal));
+                printf("binding..\n");
             }
             else{
                 perror("error in binding");
                 shared_memory[i].bound = -1;
             }
+        //  printf("ened initend:%d\n",shared_memory[i].sender_window.swnd_end);
+
+
             if (sem_post(sem_c) == -1) {
             perror("sem_post");
             exit(EXIT_FAILURE);
@@ -194,138 +214,140 @@ int main() {
 void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window, MTPSocketInfo mtp_socket_info);
 
 void *thread_R(void *arg) {
+    double p=DROP_PROBABILITY;
     // MTPSocketInfo *shared_memory = (MTPSocketInfo *)arg;
-
     fd_set readfds;
-    int max_sd = 0;
+int max_sd = 0;
+    struct timeval timeout;
+    int timeout_secs=TIMEOUT_SECONDS;
 
-    while (1) {
-        FD_ZERO(&readfds);
-        max_sd = 0;
-        int cnt=0;
-   
-        // Add all UDP sockets to the set
-            // for (int i = 0; i < MAX_SOCKETS; i++) {
-            //     printf("index %d i %d\n",i,shared_memory[i].is_free);
-            //     if(shared_memory[i].is_free==1)
-            //     {
-            //         continue;
-
-            //     }
-
-            //     cnt++;
-            //     if (shared_memory[i].recv_socket_id > 0) {
-            //         FD_SET(shared_memory[i].recv_socket_id, &readfds);
-            //         if (shared_memory[i].recv_socket_id > max_sd) {
-            //             max_sd = shared_memory[i].recv_socket_id;
-            //         }
-            //     }
-            // }
-        // FD_SET()
-        // if(cnt==0)
-        // continue;
-
-        // Use select to monitor for activity on UDP sockets
-        // int activity = select(max_sd + 1, &readfds, NULL, NULL, NULL);
-        // if (activity < 0) {
-        //     perror("Error in select");
-        //     continue;
-        // }
-
-        // // Check each socket for activity
+while (1) {
+    FD_ZERO(&readfds);
+    max_sd = 0;
+    FD_SET(selfpipe[0], &readfds);
+    max_sd=selfpipe[0];
+    // Add sockets to the fd_set and update max_sd
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        if (!shared_memory[i].is_free && shared_memory[i].bound == 3 && shared_memory[i].receiver_window.rwnd_size > 0) {
+            FD_SET(shared_memory[i].recv_socket_id, &readfds);
+            if (shared_memory[i].recv_socket_id > max_sd) {
+                max_sd = shared_memory[i].recv_socket_id;
+            }
+        }
+    }
+        // printf("select in recv\n");
+    // Use select to monitor sockets for activity
+       timeout.tv_sec = timeout_secs;
+        timeout.tv_usec = 0;
+    int activity = select(max_sd + 1, &readfds, NULL, NULL, &timeout);
+    if (activity < 0) {
+        perror("Error in select");
+        continue;
+    }
+    if(activity==0)
+    {
+        //TIMEOUT OCCURRED
         for (int i = 0; i < MAX_SOCKETS; i++) {
-            if(shared_memory[i].is_free)continue;
-            cnt++;
-
-            // printf("bound %d \n",shared_memory[i].bound);
-
-           if(shared_memory[i].bound==3 )
+            if (!shared_memory[i].is_free && shared_memory[i].bound == 3 && shared_memory[i].receiver_window.rwnd_size > 0) {
+            if(shared_memory[i].receiver_window.nospace && shared_memory[i].receiver_window.rwnd_size>0)
             {
-           if(shared_memory[i].receiver_window.rwnd_size==0)
-           {
-            // printf("\n$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$\nbuffer full...\n");
-            continue;
-           }
-                // printf("Receving :\n");
-            // if (FD_ISSET(shared_memory[i].recv_socket_id, &readfds)) {
+                //no space is set but space available in receiver buffer
+            int l=lastInOrder(&shared_memory[i].receiver_window);
+            shared_memory[i].receiver_window.rwnd_end=l;
+            send_acknowledgement(shared_memory[i].recv_socket_id, l-1,shared_memory[i].receiver_window.rwnd_size,shared_memory[i]);
+
+            }
+            }
+        }
+    }
+    // Check each socket for activity
+    if (FD_ISSET(selfpipe[0], &readfds)) {
+        // Do something to handle the self-pipe signal
+        // For example, consume the signal by reading from the pipe
+        char buf[1];
+        read(selfpipe[0], buf, sizeof(buf));
+    }
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        if (!shared_memory[i].is_free && shared_memory[i].bound == 3 && shared_memory[i].receiver_window.rwnd_size > 0) {
+            if (FD_ISSET(shared_memory[i].recv_socket_id, &readfds)) {
                 Message received_message;
-                // Receive message from the socket
                 uint8_t buffer[sizeof(Message)];
 
                 int bytes_received = recvfrom(shared_memory[i].recv_socket_id, buffer, sizeof(buffer), MSG_DONTWAIT, NULL, NULL);
                 if (bytes_received < 0) {
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    // No data available yet, handle accordingly
-                    // printf("No data available yet\n");
-                } else {
-                    perror("Error receiving data");
-                    continue;   
-                }
-                }
-                else if(bytes_received>0)
-                {
-                    printf("bytes recv: %d\n",bytes_received);
-                    deserializeMsg(buffer, &received_message);
-                    if(received_message.is_ack)
-                    process_received_acknowledgement(received_message,&shared_memory[i].sender_window);
-                    else
-                    {
-                    printf("----------------------\nrwnd_start: %d rwnd_end :%d rwnd size: %d\n",shared_memory[i].receiver_window.rwnd_start,shared_memory[i].receiver_window.rwnd_end,shared_memory[i].receiver_window.rwnd_size);
-                    process_received_message(i,received_message, &(shared_memory[i].receiver_window),shared_memory[i]);
-                    printf("**********************\nrwnd_start: %d rwnd_end :%d rwnd size: %d\n",shared_memory[i].receiver_window.rwnd_start,shared_memory[i].receiver_window.rwnd_end,shared_memory[i].receiver_window.rwnd_size);
-                    if(shared_memory[i].receiver_window.rwnd_size==RECEIVER_BUFFER_SIZE)
-                    printf("signalled\n\n");
-                    sem_post(shared_memory[i].receiver_window.sem_recv);
+                        // No data available yet, handle accordingly
+                        continue;
+                    } else {
+                        perror("Error receiving data");
+                        continue;
                     }
-                    printf("received data %s %d\n",received_message.message,received_message.sequence_number);
-                    bzero(&received_message,sizeof(Message));
-                }
-                else
-                {
-                    printf("No dat\n");
+                } else if (bytes_received > 0) {
+
+                    if(!dropMessage(p))
+                    {
+                    // printf("bytes recv: %d\n", bytes_received);
+                    deserializeMsg(buffer, &received_message);
+                    int prev_rsize = shared_memory[i].receiver_window.rwnd_size;
+                    if (received_message.is_ack)
+                        process_received_acknowledgement(received_message, &shared_memory[i].sender_window);
+                    else {
+                        // printf("----------------------\nrwnd_start: %d rwnd_end :%d rwnd size: %d\n", shared_memory[i].receiver_window.rwnd_start, shared_memory[i].receiver_window.rwnd_end, shared_memory[i].receiver_window.rwnd_size);
+                        process_received_message(i, received_message, &(shared_memory[i].receiver_window), shared_memory[i]);
+                        // printf("**********************\nrwnd_start: %d rwnd_end :%d rwnd size: %d %d\n", shared_memory[i].receiver_window.rwnd_start, shared_memory[i].receiver_window.rwnd_end, shared_memory[i].receiver_window.rwnd_size,shared_memory[i].receiver_window.receiver_buffer[shared_memory[i].receiver_window.rwnd_start%RECEIVER_BUFFER_SIZE].sequence_number);
+                        if(shared_memory[i].receiver_window.rwnd_size==RECEIVER_BUFFER_SIZE)
+                        shared_memory[i].receiver_window.nospace=1;
+                        // if (prev_rsize == RECEIVER_BUFFER_SIZE && shared_memory[i].receiver_window.rwnd_size == RECEIVER_BUFFER_SIZE - 1) {
+                        //     printf("signalled\n\n");
+                        //     // sem_post(shared_memory[i].receiver_window.sem_recv);
+                        // }
+                    }
+                    // printf("received data %s %d\n", received_message.message, received_message.sequence_number);
+                    }
+                    bzero(&received_message, sizeof(Message));
+                } else {
+                    printf("No data\n");
                     // no data received
                 }
-                // if (bytes_received == sizeof(Message)) {
-                    // Process the received message
-                // }
-            // }
             }
-            // printf("bound %d \n",shared_memory[i].bound);
         }
-                // printf("Num Sockets: %d\n",cnt);
-
-
     }
-    
+}
 
-    pthread_exit(NULL);
+pthread_exit(NULL);
+
 }
 
 void process_received_acknowledgement(Message ack, SenderWindow *sender_window) {
     // Update rwnd size
        // Lock the semaphore before accessing/modifying shared memory
-       printf("hello ack: seq num %d\n",ack.sequence_number);
     if (sem_wait(semaphore) == -1) {
         perror("sem_wait");
         exit(EXIT_FAILURE);
     }
+    //    printf("hello ack: seq num %d %d\n",ack.sequence_number,ack.rwnd_size);
     // sender_window->rwnd_size = ack.rwnd_size;
 
     // Update last in-order sequence number
     int last_in_order_seq = ack.sequence_number;
     int rwnd_size = ack.rwnd_size;
-    sender_window->swnd_end=sender_window->swnd_start+rwnd_size;
-    sender_window->swnd_size=rwnd_size;
 
     // Mark buffer as free for all previous sequence numbers
-    for (int i = sender_window->swnd_start; i <= last_in_order_seq; i++) {
+    for (int i = sender_window->swnd_start; i != (last_in_order_seq+1); i++) {
         int index = i % SENDER_BUFFER_SIZE;
-        memset(sender_window->sender_buffer[index].message,'\0',strlen(sender_window->sender_buffer[index].message));
-        sender_window->sender_buffer[index].sequence_number = 0; // Mark as free
+        if(sender_window->sender_buffer[index].frame_no>last_in_order_seq)continue;
+
+        // printf("deleting num %d\n",sender_window->sender_buffer[index].frame_no);
+        memset(sender_window->sender_buffer[index].message,'\0',sizeof(sender_window->sender_buffer[index].message));
+        sender_window->sender_buffer[index].sequence_number = -1; // Mark as free
         sender_window->sender_buffer[index].timestamp = -1; // Mark as free
         sender_window->sender_buffer[index].ack_received = 1; // Mark as free
     }
+    
     sender_window->swnd_start = last_in_order_seq + 1; // Update start index of receive window
+    sender_window->swnd_end=sender_window->swnd_start+rwnd_size;
+    sender_window->swnd_size=rwnd_size;
+    // printf("swnd updated : swnd_end %d start %d\n",sender_window->swnd_end,sender_window->swnd_start);
    // Lock the semaphore before accessing/modifying shared memory
     if (sem_post(semaphore) == -1) {
         perror("sem_post");
@@ -337,7 +359,7 @@ void send_acknowledgement(int socket_fd, int sequence_number, int rwnd_size,MTPS
     Message ack;
     ack.sequence_number = sequence_number;
     ack.rwnd_size = rwnd_size;
-    ack.is_ack=1;
+    ack.is_ack=1;//zero for message non zero for ack
     uint8_t ack_buffer[sizeof(Message)];
     // Convert ACK structure to byte array
     serializeMsg(&ack,ack_buffer);
@@ -357,26 +379,32 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
         perror("sem_wait");
         exit(EXIT_FAILURE);
     }
-    printf("recevd message: seq number:%d rwnd end:%d\n",received_message.sequence_number,receiver_window->rwnd_end);
-    if (received_message.sequence_number == receiver_window->rwnd_end ) {
+    int left=RECEIVER_BUFFER_SIZE-(receiver_window->rwnd_end-receiver_window->rwnd_start)%RECEIVER_BUFFER_SIZE;
+
+    // printf("recevd message: seq number:%d rwnd end:%d\n",received_message.sequence_number,receiver_window->rwnd_end);
+    if (received_message.sequence_number == (receiver_window->rwnd_end)%MAX_SEQNUM  ) {
         // In-order message
         int index = receiver_window->rwnd_end % RECEIVER_BUFFER_SIZE;
-        
-        if (receiver_window->receiver_buffer[index].sequence_number == 0) {
+        // printf("seq num: %d %d %d\n",received_message.sequence_number,receiver_window->receiver_buffer[index].sequence_number,index );
+        if (receiver_window->receiver_buffer[index].sequence_number == -1) {
             // Message not yet received, store in receiver buffer
             memcpy(receiver_window->receiver_buffer[index].message,received_message.message,strlen(received_message.message));
-            printf("here %d %s\n",index,receiver_window->receiver_buffer[index].message);
+            // printf("inorder message not duplicate %d %s\n",index,receiver_window->receiver_buffer[index].message);
+            // printf("inorder message not duplicate %d \n",index);
             receiver_window->receiver_buffer[index].sequence_number=received_message.sequence_number;
             receiver_window->rwnd_end++;
             receiver_window->rwnd_size--;
-            printf("sending ack\n");
             int value;
 
             // Assuming sem_init has been called to initialize the semaphore before usage
 
             // Get the value of the semaphore
-           
-            send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
+            int l=lastInOrder(receiver_window);
+            printf("sending ack %d\n",l-1);
+            receiver_window->rwnd_end=l;
+            send_acknowledgement(shared_memory[i].recv_socket_id, l-1,receiver_window->rwnd_size,mtp_socket_info);
+
+            // send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
         } else {
             int idx;
             // Duplicate message, still send ACK with last in-order sequence number
@@ -386,74 +414,121 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
             //     {
             //         break;
             //     }
-            // }
-            send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
+            // }'
+            // printf("Inorder duplicate\n");
+            int l=lastInOrder(receiver_window);
+            receiver_window->rwnd_end=l;
+            send_acknowledgement(shared_memory[i].recv_socket_id, l-1,receiver_window->rwnd_size,mtp_socket_info);
+
+            // send_acknowledgement(shared_memory[i].recv_socket_id, receiver_window->rwnd_end-1,receiver_window->rwnd_size,mtp_socket_info);
         }
-    } else if (received_message.sequence_number > receiver_window->rwnd_end &&
-               received_message.sequence_number <= receiver_window->rwnd_end + RECEIVER_BUFFER_SIZE) {
+    } else if (received_message.sequence_number > receiver_window->rwnd_end%MAX_SEQNUM &&
+               received_message.sequence_number < (receiver_window->rwnd_start+RECEIVER_BUFFER_SIZE)%MAX_SEQNUM  ) {
         // Out-of-order message
         int index = received_message.sequence_number % RECEIVER_BUFFER_SIZE;
-        if (receiver_window->receiver_buffer[index].sequence_number == 0) {
+        if (receiver_window->receiver_buffer[index].sequence_number == -1) {
             // Store if within window and not a duplicate
-            receiver_window->receiver_buffer[index] = received_message;
+            memcpy(receiver_window->receiver_buffer[index].message,received_message.message,strlen(received_message.message));
+            // printf("ahead message %d %s\n",index,receiver_window->receiver_buffer[index].message);
             receiver_window->rwnd_size--;
+            receiver_window->receiver_buffer[index].sequence_number=received_message.sequence_number;
+            // int l=lastInOrder(receiver_window);
+            // receiver_window->rwnd_end=l;
+            // send_acknowledgement(shared_memory[i].recv_socket_id,l-1, receiver_window->rwnd_size,mtp_socket_info);
         }
+
         int idx;
             // Duplicate message, still send ACK with last in-order sequence number
-          
+                      int l=lastInOrder(receiver_window);
+            receiver_window->rwnd_end=l;
+            send_acknowledgement(shared_memory[i].recv_socket_id, l-1,receiver_window->rwnd_size,mtp_socket_info);
         // Send ACK with last in-order sequence number
-        send_acknowledgement(shared_memory[i].recv_socket_id,receiver_window->rwnd_end-1, receiver_window->rwnd_size,mtp_socket_info);
-    } else {
-        // Message out of window range, ignore
+        // send_acknowledgement(shared_memory[i].recv_socket_id,receiver_window->rwnd_end-1, receiver_window->rwnd_size,mtp_socket_info);
+    } 
+    // else if(received_message.sequence_number<receiver_window->rwnd_end+left) {
+
+    //     // in window range but ahead of rwnd_end
+    //     int index = received_message.sequence_number % RECEIVER_BUFFER_SIZE;
+    //     if (receiver_window->receiver_buffer[index].sequence_number == -1) {
+    //         // Store if within window and not a duplicate
+    //         memcpy(receiver_window->receiver_buffer[index].message,received_message.message,strlen(received_message.message));
+    //         printf("here mid %d %s\n",index,receiver_window->receiver_buffer[index].message);
+    //         receiver_window->rwnd_size--;
+    //         receiver_window->receiver_buffer[index].sequence_number=received_message.sequence_number;
+    //         int l=lastInOrder(receiver_window);
+    //         receiver_window->rwnd_end=l;
+
+    //         send_acknowledgement(shared_memory[i].recv_socket_id,l-1, receiver_window->rwnd_size,mtp_socket_info);
+    //     }
+
+    // }
+    else{
+        // printf("out of window %d\n",received_message.sequence_number);
     }
-       // Lock the semaphore before accessing/modifying shared memory
     if (sem_post(semaphore) == -1) {
         perror("sem_post");
         exit(EXIT_FAILURE);
     }
 }
+int lastInOrder(ReceiverWindow* receiver_window)
+{
+    for(int k=receiver_window->rwnd_start;k<receiver_window->rwnd_start+RECEIVER_BUFFER_SIZE;k++)
+    {
+        int index = k % RECEIVER_BUFFER_SIZE;
+        if (receiver_window->receiver_buffer[index].sequence_number == -1) {
+            return k;
+        }
+        // printf("%d\n",k);
+    }
+    return RECEIVER_BUFFER_SIZE;
 
+}
 
 void handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_in dest_addr);
 int send_message(int socket_id, Message message, struct sockaddr_in dest_addr);
+
 
 void *thread_S(void *arg) {
     // MTPSocketInfo *mtp_socket_info = (MTPSocketInfo *)arg;
 
     while (1) {
         // Send messages from sender buffer within sender window
-
+        usleep((int)(TIMEOUT_SECONDS*1e6/4));
        for (int i = 0; i < NUM_SOCKETS; i++) {
             // Check if the MTPSocketInfo entry is initialized
             if (!shared_memory[i].is_free) {
                 // Send any unacknowledged packets in the sender buffer within the window
-                for (int idx = shared_memory[i].sender_window.swnd_start; idx != (shared_memory[i].sender_window.swnd_end); idx++) {
-                    
+                // printf("start: %d end: %d \n",shared_memory[i].sender_window.swnd_start,shared_memory[i].sender_window.swnd_end);
+                    // printf("end %d\n",shared_memory[i].sender_window.swnd_end);
+                for (int idx = shared_memory[i].sender_window.swnd_start; idx != (shared_memory[i].sender_window.swnd_end); idx+=1) {
                     int j=idx%SENDER_BUFFER_SIZE;
-
                     Message *message = &(shared_memory[i].sender_window.sender_buffer[j]);
-                    if(strlen(message->message)==0)
+                    if(strlen(message->message)==0 || message->message==NULL)
                     {
+                    // printf("no message %d\n",j);
                         continue;
-                        printf("skipped :%d",j);
                     }
                         if (sem_wait(semaphore) == -1) {
                             perror("sem_wait");
                             exit(EXIT_FAILURE);
                         }
-                    message->sequence_number=j%SENDER_BUFFER_SIZE;
-                    if (message->timestamp==-1 || (!message->ack_received && is_timeout(message,TIMEOUT_SECONDS))) {
+                    message->sequence_number=message->frame_no%16;
+                    // printf("num %d\n",message->sequence_number);
+                    if (message->timestamp==-1 || (message->ack_received!=1 && is_timeout(message,TIMEOUT_SECONDS))) {
                         // Send message
-                        printf("message in send \n %s\n",message->message);
+                        message->is_ack=0;
+                        // printf("message in send \n %s %d %d\n",message->message,message->sequence_number,message->timestamp);
                             uint8_t serialized_data[sizeof(Message)];
                         serializeMsg(message, serialized_data);
+                        transmission++;
                         if (sendto(shared_memory[i].send_socket_id, serialized_data, sizeof(serialized_data), 0,
                                    (struct sockaddr *)&(shared_memory[i].dest_addr), sizeof(shared_memory[i].dest_addr)) == -1) {
                             perror("Error sending message");
+                      }
+                    //   printf("TOT TRansmission %d\n",transmission);
 
                             // Handle error, possibly terminate the program or take appropriate action
                   
-                      }
                         message->timestamp=time(NULL);
                         message->ack_received=0;
                          // Lock the semaphore before accessing/modifying shared memory
@@ -468,8 +543,6 @@ void *thread_S(void *arg) {
             }
        }
 
-        // Handle timeout if no ACK received
-        // handle_timeout(mtp_socket_info->send_socket_id, &(mtp_socket_info->sender_window), mtp_socket_info->dest_addr);
     }
 
 
@@ -515,8 +588,50 @@ int is_timeout(Message *message, int timeout_seconds) {
 void *garbage_collector(void *arg) {
     MTPSocketInfo *shared_memory = (MTPSocketInfo *)arg;
 
+    while(1)
+    {
+        usleep(TIMEOUT_SECONDS*1e6/2);
     // Implement garbage collector logic here
+    if (sem_wait(semaphore) == -1) {
+        perror("sem_wait");
+        exit(EXIT_FAILURE);
+    }
+    int flag=1;
+    for (int i = 0; i < NUM_SOCKETS; i++) {
+        if(shared_memory[i].closed)
+        {
+        printf("clearing socket %d\n",i);
+        for(int j=0;j<SENDER_BUFFER_SIZE;j++)
+        {
+            if(shared_memory[i].sender_window.sender_buffer[j].ack_received==0)
+            {
+                flag=0;
+                // printf("in garbage : %d\n",shared_memory[i].sender_window.sender_buffer[j].frame_no);
+            }
+        }
+        if(flag)
+        {
 
+        printf("closing socket %d\n",i);
+        close(shared_memory[i].recv_socket_id);
+        close(shared_memory[i].send_socket_id);
+        resetSM(&shared_memory[i]);
+        }
+        // int tot_messages=shared_memory[i].sender_window.swnd_written;
+        // if(transmission!=0)
+        // transmission=0;
+        // printf("\naverage number of transmissions to send the file: %lf\n",(double)(tot_messages)/transmission);
+
+        }
+    }
+
+    if (sem_post(semaphore) == -1) {
+        perror("sem_post");
+        exit(EXIT_FAILURE);
+    }
+    }
+
+    // return 0;
     pthread_exit(NULL);
 }
 

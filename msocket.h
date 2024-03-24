@@ -9,17 +9,21 @@
 #include <fcntl.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 
 #define MAX_SOCKETS 25
 #define RECEIVER_BUFFER_SIZE 5
+#define DROP_PROBABILITY 0.3
+#define MAX_SEQNUM 16
 
 #define SENDER_BUFFER_SIZE 10
-#define TIMEOUT_SECONDS 500
+#define TIMEOUT_SECONDS 5
 #define NUM_SOCKETS 25
 #define SHARED_MEMORY_NAME "mtp_shared_memory"
 #define SOCK_MTP 2
 typedef struct {
     int sequence_number;
+    int frame_no;
     int ack_received;
     int timestamp;
     int is_ack;
@@ -39,24 +43,27 @@ typedef struct {
     int rwnd_start;
     int rwnd_end;
     int rwnd_size;
-    sem_t* sem_recv;
+    int nospace;
 } ReceiverWindow;
 typedef struct {
     Message sender_buffer[SENDER_BUFFER_SIZE];
     int swnd_start;
     int swnd_end;
     int swnd_size;
+    int swnd_written;
     sem_t* sem_send;
+    int nospace;
+    int flag;
 
 } SenderWindow;
 
 typedef struct {
-     int is_free;
-     int bound;
-    pid_t process_id;
+    int is_free;
+    int bound;
     int recv_socket_id;
     char other_end_IP[20];
     int other_end_port;
+    int closed;
     int send_socket_id;
     struct sockaddr_in source_addr;
     struct sockaddr_in dest_addr;
@@ -73,4 +80,7 @@ int m_close(int sockfd);
 void serializeMsg(  Message *data, uint8_t *buffer);
 
 void deserializeMsg(const uint8_t *buffer, Message *data); 
+int dropMessage(double p);
+void resetSM(MTPSocketInfo* mtp_socket);
+
 #endif /* MTP_SOCKET_H */

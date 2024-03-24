@@ -1,0 +1,189 @@
+Average of Transmissions    p
+            1.05            1
+            1.13            0.05
+            1.13            0.1
+            1.34            0.15
+            1.42            0.2
+            1.69            0.25
+            1.72	     0.3
+            1.85	     0.35
+            2.1             0.4
+            2.25	     0.45
+            2.45	     0.5
+
+
+This header file, msocket.h, defines several data structures and function prototypes for a simple implementation of a custom transport layer protocol. Let's describe the data structures used in this header file:
+
+1. Message:
+   - This structure represents a message that is being sent or received over the transport layer.
+   - It contains the following fields:
+     - sequence_number: Sequence number of the message.
+     - frame_no: Frame number of the message.
+     - ack_received: Flag indicating whether an acknowledgment has been received for this message.
+     - timestamp: Timestamp of the message.
+     - is_ack: Flag indicating whether the message is an acknowledgment.
+     - rwnd_size: Receiver window size.
+     - message: Array to store the actual message data. Assuming a fixed message size of 1024 bytes.
+
+2. Acknowledgement:
+   - This structure represents an acknowledgment message.
+   - It contains the following fields:
+     - sequence_number: Sequence number being acknowledged.
+     - rwnd_size: Receiver window size.
+
+3. ReceiverWindow:
+   - This structure represents the receiver window.
+   - It contains the following fields:
+     - receiver_buffer: Array to store received messages.
+     - rwnd_start: Index indicating the start of the receiver window.
+     - rwnd_end: Index indicating the end of the receiver window.
+     - rwnd_size: Current size of the receiver window.
+     - nospace: Flag indicating if there is no space available in the window.
+
+4. SenderWindow:
+   - This structure represents the sender window.
+   - It contains the following fields:
+     - sender_buffer: Array to store messages to be sent.
+     - swnd_start: Index indicating the start of the sender window.
+     - swnd_end: Index indicating the end of the sender window.
+     - swnd_size: Current size of the sender window.
+     - swnd_written: Number of messages already written to the sender window.
+     - sem_send: Semaphore for controlling access to the sender buffer.
+     - nospace: Flag indicating if there is no space available in the window.
+     - flag: Flag for internal use.
+
+5. MTPSocketInfo:
+   - This structure represents information about the MTP (My Transport Protocol) socket.
+   - It contains various fields related to socket management, such as socket IDs, addresses, window information, etc.
+   - Key fields include:
+     - is_free: Flag indicating if the socket is free.
+     - bound: Flag indicating if the socket is bound to an address.
+     - recv_socket_id: ID of the receiving socket.
+     - other_end_IP: IP address of the other end of the connection.
+     - other_end_port: Port of the other end of the connection.
+     - closed: Flag indicating if the socket is closed.
+     - send_socket_id: ID of the sending socket.
+     - source_addr: Source address of the socket.
+     - dest_addr: Destination address of the socket.
+     - receiver_window: Receiver window information.
+     - sender_window: Sender window information.
+
+These data structures are used to manage messages, acknowledgments, sender and receiver windows, and socket information in the context of a custom transport layer protocol implementation.
+            	
+Sure, let's describe the functions used in the provided header file mtp_socket.h:
+
+1. m_socket:
+   - Prototype: int m_socket(int domain, int type, int protocol);
+   - Description: This function creates a new socket.
+   - Parameters:
+     - domain: Communication domain (e.g., AF_INET for IPv4).
+     - type: Type of socket (e.g., SOCK_DGRAM for datagram socket).
+     - protocol: Protocol used (usually set to 0 for default protocol).
+   - Returns: Socket file descriptor on success, -1 on error.
+
+2. m_bind:
+   - Prototype: int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen, struct sockaddr_in dest_addr);
+   - Description: This function binds a socket to a local address and port.
+   - Parameters:
+     - sockfd: Socket file descriptor.
+     - source_addr: Local address structure.
+     - addrlen: Length of the address structure.
+     - dest_addr: Destination address structure.
+   - Returns: 0 on success, -1 on error.
+
+3. m_sendto:
+   - Prototype: ssize_t m_sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen);
+   - Description: This function sends data to a specific destination.
+   - Parameters:
+     - sockfd: Socket file descriptor.
+     - buf: Pointer to the data buffer.
+     - len: Length of the data to be sent.
+     - flags: Additional flags for send operation.
+     - dest_addr: Destination address structure.
+     - addrlen: Length of the destination address structure.
+   - Returns: Number of bytes sent on success, -1 on error.
+
+4. m_recvfrom:
+   - Prototype: ssize_t m_recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen);
+   - Description: This function receives data from a specific source.
+   - Parameters:
+     - sockfd: Socket file descriptor.
+     - buf: Pointer to the buffer where received data will be stored.
+     - len: Maximum length of data to receive.
+     - flags: Additional flags for receive operation.
+     - src_addr: Source address structure.
+     - addrlen: Pointer to the length of the source address structure.
+   - Returns: Number of bytes received on success, -1 on error.
+
+5. m_close:
+   - Prototype: int m_close(int sockfd);
+   - Description: This function closes a socket.
+   - Parameters:
+     - sockfd: Socket file descriptor to be closed.
+   - Returns: 0 on success, -1 on error.
+
+6. serializeMsg:
+   - Prototype: void serializeMsg(Message *data, uint8_t *buffer);
+   - Description: This function serializes a Message structure into a byte buffer.
+   - Parameters:
+     - data: Pointer to the Message structure to be serialized.
+     - buffer: Pointer to the byte buffer where the serialized data will be stored.
+
+7. deserializeMsg:
+   - Prototype: void deserializeMsg(const uint8_t *buffer, Message *data);
+   - Description: This function deserializes a byte buffer into a Message structure.
+   - Parameters:
+     - buffer: Pointer to the byte buffer containing the serialized data.
+     - data: Pointer to the Message structure where the deserialized data will be stored.
+
+8. dropMessage:
+   - Prototype: int dropMessage(double p);
+   - Description: This function simulates dropping a message with a certain probability.
+   - Parameters:
+     - p: Probability of dropping a message (0 <= p <= 1).
+   - Returns: 1 if the message is dropped, 0 otherwise.
+
+9. resetSM:
+   - Prototype: void resetSM(MTPSocketInfo* mtp_socket);
+   - Description: This function resets the state machine for a given MTPSocketInfo structure.
+   - Parameters:
+     - mtp_socket: Pointer to the MTPSocketInfo structure to be reset.
+
+These functions are designed to handle socket creation, binding, sending and receiving data, closing sockets, serialization and deserialization of messages, simulating message dropping, and resetting socket state machine, providing the necessary functionality for a custom transport layer protocol implementation.
+
+The provided code implements a multi-threaded application for managing MTP (Mini Transport Protocol) sockets. Let's describe the functions and new data structures used:
+
+1. Shared Data Structures:
+   - MTPSocketInfo: This structure represents the shared information for MTP sockets. It contains fields such as socket IDs, socket states, sender and receiver window information, source and destination addresses, etc.
+   - ReceiverWindow: Represents the receiver window of an MTP socket, containing fields for managing the receiver buffer and window parameters.
+   - SenderWindow: Represents the sender window of an MTP socket, containing fields for managing the sender buffer and window parameters.
+   - Message: Structure representing a message exchanged between sender and receiver, including fields for sequence number, acknowledgment flag, message content, etc.
+
+2. Functions:
+
+   - main(): The main function of the program. It initializes shared memory, semaphores, and threads for handling receiver (thread_R), sender (thread_S), and garbage collection (garbage_collector).
+  
+   - thread_R(void *arg): This thread function handles receiving messages. It monitors sockets for incoming data, processes received messages, and sends acknowledgments.
+  
+   - process_received_message(int i, Message received_message, ReceiverWindow *receiver_window, MTPSocketInfo mtp_socket_info): Processes received messages and updates the receiver window accordingly.
+  
+   - process_received_acknowledgement(Message ack, SenderWindow *sender_window): Updates sender window parameters based on received acknowledgments.
+  
+   - send_acknowledgement(int socket_fd, int sequence_number, int rwnd_size, MTPSocketInfo mtp_socket_info): Sends acknowledgment messages for received data.
+  
+   - lastInOrder(ReceiverWindow* receiver_window): Finds the last in-order sequence number in the receiver window.
+  
+   - thread_S(void *arg): This thread function handles sending messages. It iterates over sender buffers, sends messages, and handles timeouts for retransmissions.
+  
+   - handle_timeout(int socket_id, SenderWindow *sender_window, struct sockaddr_in dest_addr): Retransmits messages in case of timeouts.
+  
+   - is_timeout(Message *message, int timeout_seconds): Checks if a message has timed out based on the specified timeout threshold.
+  
+   - garbage_collector(void *arg): The garbage collector thread function. It periodically checks for closed sockets and performs cleanup operations, such as closing sockets and resetting socket state machines.
+
+3. Other Variables:
+   - semaphore: Semaphore for synchronizing access to shared memory.
+   - sem_c: Semaphore for synchronizing access to shared memory during socket creation and binding.
+   - selfpipe[2]: Self-pipe used to notify select call of newly added socket.
+   - transmission: Counter for tracking the number of transmissions.
+  
