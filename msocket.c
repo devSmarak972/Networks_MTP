@@ -161,7 +161,7 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
     key_t key = ftok("makefile", 'S'); // Generate a key for the shared memory segment
 
     // Create or access the shared memory segment
-    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo),  0666);
+    int shmid = shmget(key, NUM_SOCKETS * sizeof(MTPSocketInfo), 0666);
     if (shmid == -1) {
         perror("shmget");
         exit(EXIT_FAILURE);
@@ -169,16 +169,16 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
 
     // Attach the shared memory segment to the process address space
     MTPSocketInfo *shared_memory = shmat(shmid, NULL, 0);
-    if (shared_memory == (MTPSocketInfo *)-1) {
+    if (shared_memory == (void *)-1) {
         perror("shmat");
         exit(EXIT_FAILURE);
     }
 
-  
-
-    if (i == MAX_SOCKETS) {
-        errno = EBADF;  // Bad file descriptor
-        return -1;
+    // Open semaphores
+    sem_t *sem1 = sem_open("Sem1", 0);  // Semaphore for bind request
+    if (sem1 == SEM_FAILED) {
+        perror("sem_open Sem1");
+        exit(EXIT_FAILURE);
     }
     
    sem_c = sem_open("semc", 0);
@@ -187,13 +187,11 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
         exit(EXIT_FAILURE);
     }
 
- 
- // Lock the semaphore before accessing/modifying shared memory
+    // Lock the semaphore before accessing/modifying shared memory
     if (sem_wait(sem_c) == -1) {
-        perror("sem_wait");
+        perror("sem_wait sem_c");
         exit(EXIT_FAILURE);
     }
-    // Bind the UDP socket
 
     int ret;
             shared_memory[i].source_addr = source_addr;
@@ -211,6 +209,9 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
         ret=0;
     shared_memory[i].bound=3;
 
+    if (sem_post(sem1) == -1) {  // Signal init process to handle bind
+        perror("sem_post sem1");
+        exit(EXIT_FAILURE);
     }
     else
     {
@@ -219,13 +220,24 @@ int m_bind(int sockfd, struct sockaddr_in source_addr, socklen_t addrlen,struct 
         // shared_memory->source_addr 
         // shared_memory->dest_addr ;
 
+    if (sem_wait(sem2) == -1) {  // Wait for bind to complete
+        perror("sem_wait sem2");
+        exit(EXIT_FAILURE);
     }
 
+    int ret = 0;
+    // Check result of bind operation
+    if (shared_memory[sockfd].bound != 0) {  // Check if bind was successful
+        ret = -1;  // Bind failed
+        errno = shared_memory[sockfd].bound;  // Set errno to the error reported by init process
+    }
 
-   if (shmdt(shared_memory) == -1) {
+    // Detach the shared memory segment from the process address space
+    if (shmdt(shared_memory) == -1) {
         perror("shmdt");
         exit(EXIT_FAILURE);
     }
+
     return ret;
 }
 

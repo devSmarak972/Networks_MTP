@@ -23,6 +23,39 @@ int selfpipe[2];
 sem_t* sem_recv;
 int transmission=0;
 MTPSocketInfo *shared_memory ;
+
+void initialize_semaphores() {
+    sem_unlink("sem");
+    sem_unlink("semc");
+    sem_unlink("Sem1");
+    sem_unlink("Sem2");
+
+    semaphore = sem_open("sem", O_CREAT, 0666, 1);
+    if (semaphore == SEM_FAILED) {
+        perror("sem_open semaphore");
+        exit(EXIT_FAILURE);
+    }
+
+    sem_c = sem_open("semc", O_CREAT, 0666, 1);
+    if (sem_c == SEM_FAILED) {
+        perror("sem_open sem_c");
+        exit(EXIT_FAILURE);
+    }
+
+    sem1 = sem_open("Sem1", O_CREAT, 0666, 0);
+    if (sem1 == SEM_FAILED) {
+        perror("sem_open Sem1");
+        exit(EXIT_FAILURE);
+    }
+
+    sem2 = sem_open("Sem2", O_CREAT, 0666, 0);
+    if (sem2 == SEM_FAILED) {
+        perror("sem_open Sem2");
+        exit(EXIT_FAILURE);
+    }
+}
+
+
 int main() {
 
     // printf("entry\n");
@@ -62,7 +95,8 @@ int main() {
     
     //   sem_recv=sem_open("/semrecv", O_CREAT, 0666, 0);
 
- 
+    initialize_semaphores();
+     
     // Initialize shared memory structures
     // Set all MTP socket entries as free
     for (int i = 0; i < NUM_SOCKETS; i++) {
@@ -89,6 +123,7 @@ int main() {
     }
         //  printf("ened init:%d\n",shared_memory[0].sender_window.swnd_end);
 
+
     // Create threads R, S, and garbage collector G
     pthread_t thread_R_id, thread_S_id, garbage_collector_id;
     if (pthread_create(&thread_R_id, NULL, thread_R, (void *)shared_memory) != 0) {
@@ -106,30 +141,88 @@ int main() {
 
 
 
-    while(1)
-    {
+    // while(1)
+    // {
 
         
 
-    for (int i = 0; i < MAX_SOCKETS; i++) {
-        if(shared_memory[i].is_free==1)continue;
-        if(shared_memory[i].bound==1)
-        {
-            if (sem_wait(sem_c) == -1) {
-            perror("sem_wait");
-            exit(EXIT_FAILURE);
+    // for (int i = 0; i < MAX_SOCKETS; i++) {
+    //     if(shared_memory[i].is_free==1)continue;
+    //     if(shared_memory[i].bound==1)
+    //     {
+    //         if (sem_wait(sem_c) == -1) {
+    //         perror("sem_wait");
+    //         exit(EXIT_FAILURE);
+    //     }
+    //         int ssockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    //         if (ssockfd < 0) {
+    //             return -1;
+    //         }
+    //         int rsockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    //         if (rsockfd < 0) {
+    //             return -1;
+    //         }
+    //         printf("socket creation \n");
+
+    //         // Initialize the socket entry
+    //         shared_memory[i].send_socket_id = ssockfd;
+    //         shared_memory[i].recv_socket_id = rsockfd;
+    //         shared_memory[i].bound=0;
+    //         if (sem_post(sem_c) == -1) {
+    //             perror("sem_post");
+    //             exit(EXIT_FAILURE);
+    //         }
+    //     }   
+    //     else if(shared_memory[i].bound==2)
+    //     {
+    //         if (sem_wait(sem_c) == -1) {
+    //         perror("sem_wait");
+    //         exit(EXIT_FAILURE);
+    //     }
+                    
+    //         int ret = bind(shared_memory[i].recv_socket_id, (struct sockaddr *)&shared_memory[i].source_addr, sizeof(shared_memory[i].source_addr));
+    //         if (ret == 0) {
+                    
+    //             shared_memory[i].bound = 0;
+    //             printf("binding\n");
+    //         }
+    //         else{
+    //             perror("error in binding");
+    //             shared_memory[i].bound = -1;
+    //         }
+    //         if (sem_post(sem_c) == -1) {
+    //         perror("sem_post");
+    //         exit(EXIT_FAILURE);
+    //     } 
+            
+    //     }
+
+    //     }
+            
+    // }
+
+    while(1) {
+    // Loop through all MTP sockets to check their status
+    for (int i = 0; i < NUM_SOCKETS; i++) {
+        if(sem_wait(sem_c) == -1) { // Wait for access to shared memory
+            perror("sem_wait on sem_c failed");
+            continue;
         }
-            int ssockfd = socket(AF_INET, SOCK_DGRAM, 0);
-            if (ssockfd < 0) {
-                return -1;
+        if(shared_memory[i].is_free) {sem_post(sem_c); continue;} // Skip if the socket is not in use
+
+        // Handle socket creation request
+        if(shared_memory[i].bound == 1) {
+            int ssockfd = socket(AF_INET, SOCK_DGRAM, 0); // Create a new socket for sending
+            int rsockfd = socket(AF_INET, SOCK_DGRAM, 0); // Create a new socket for receiving
+
+            if (ssockfd < 0 || rsockfd < 0) {
+                perror("Socket creation failed");
+                continue;
             }
-            int rsockfd = socket(AF_INET, SOCK_DGRAM, 0);
-            if (rsockfd < 0) {
-                return -1;
-            }
+
             printf("socket creation \n");
 
-            // Initialize the socket entry
+            // Assign socket IDs for sending and receiving to the shared memory
             shared_memory[i].send_socket_id = ssockfd;
             shared_memory[i].recv_socket_id = rsockfd;
             shared_memory[i].bound=0;
@@ -154,9 +247,16 @@ int main() {
                 write(selfpipe[1], &signal, sizeof(signal));
                 printf("binding..\n");
             }
-            else{
-                perror("error in binding");
-                shared_memory[i].bound = -1;
+
+            // Attempt to bind the receiving socket
+            int bindResult = bind(shared_memory[i].recv_socket_id,
+                                  (struct sockaddr *)&shared_memory[i].source_addr,
+                                  sizeof(shared_memory[i].source_addr));
+            if (bindResult == 0) {
+                shared_memory[i].bound = 0; // Mark as successfully bound
+            } else {
+                perror("Binding failed");
+                shared_memory[i].bound = -1; // Mark as bind failed
             }
         //  printf("ened initend:%d\n",shared_memory[i].sender_window.swnd_end);
 
@@ -168,9 +268,18 @@ int main() {
             
         }
 
+            if (sem_post(sem2) == -1) { // Signal completion of bind operation to msocket.c
+                perror("sem_post on Sem2 failed");
+                sem_post(sem_c);
+                continue;
+            }
         }
-            
+        sem_post(sem_c); // Release access to shared memory
     }
+
+    usleep(100000); // Sleep briefly to reduce CPU usage
+}
+
     
 
 
@@ -373,8 +482,7 @@ void send_acknowledgement(int socket_fd, int sequence_number, int rwnd_size,MTPS
     // send(socket_fd, ack_buffer, sizeof(Message), 0);
 }
 // Process received message and update receiver window
-void process_received_message(int i,Message received_message, ReceiverWindow *receiver_window,MTPSocketInfo mtp_socket_info) {
-       // Lock the semaphore before accessing/modifying shared memory
+void process_received_message(int i, Message received_message, ReceiverWindow *receiver_window, MTPSocketInfo mtp_socket_info) {
     if (sem_wait(semaphore) == -1) {
         perror("sem_wait");
         exit(EXIT_FAILURE);
@@ -396,7 +504,10 @@ void process_received_message(int i,Message received_message, ReceiverWindow *re
             receiver_window->rwnd_size--;
             int value;
 
-            // Assuming sem_init has been called to initialize the semaphore before usage
+    // Debugging output
+    printf("Received message: seq num: %d, rwnd end: %d\n", received_message.sequence_number, receiver_window->rwnd_end);
+
+    int index = received_message.sequence_number % RECEIVER_BUFFER_SIZE;
 
             // Get the value of the semaphore
             int l=lastInOrder(receiver_window);

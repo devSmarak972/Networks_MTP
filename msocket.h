@@ -30,7 +30,7 @@ typedef struct {
     int rwnd_size;
     char message[1024]; // Assuming message size is 1024 bytes
 } Message;
-// Function to serializeMsg data
+// Function to serialize Msg data
 
 typedef struct {
     int sequence_number;
